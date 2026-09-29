@@ -43,13 +43,8 @@ RUN DJANGO_SECRET_KEY="collectstatic-dummy-key-not-used-at-runtime" \
 # ── Expose port ───────────────────────────────────────────────────────────────
 EXPOSE 8000
 
-# ── Start Gunicorn ────────────────────────────────────────────────────────────
-# config.wsgi:application matches the actual WSGI module in this project.
-# --workers: 2x CPU cores + 1 is a common rule of thumb (Koyeb nano = 1 vCPU → 3 workers)
-# --bind: Koyeb maps external HTTPS → container port 8000
-CMD ["gunicorn", "config.wsgi:application", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "3", \
-     "--timeout", "120", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# ── Entrypoint: migrate then start Gunicorn ───────────────────────────────────
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
