@@ -1,0 +1,85 @@
+"""
+Production settings for Zamzam Foods.
+Enforces strict security, HTTPS headers, WhiteNoise static files,
+and PostgreSQL via DATABASE_URL environment variable.
+"""
+
+import os
+import dj_database_url
+from .base import *
+
+# ─── Core ─────────────────────────────────────────────────────────────────────
+DEBUG = False
+
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+]
+if not ALLOWED_HOSTS:
+    raise ValueError("DJANGO_ALLOWED_HOSTS must be set in production.")
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+# Supabase PostgreSQL via DATABASE_URL
+# Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL_ENV:
+    raise ValueError("DATABASE_URL must be set in production.")
+
+DATABASES = {
+    "default": dj_database_url.parse(
+        DATABASE_URL_ENV,
+        conn_max_age=600,
+        conn_health_checks=True,
+        ssl_require=True,
+    )
+}
+
+# ─── Static Files (WhiteNoise) ────────────────────────────────────────────────
+# Insert WhiteNoise after SecurityMiddleware
+MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+# Media files are NOT served by Django/WhiteNoise in production.
+# Use Supabase Storage or an S3-compatible service for media uploads.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# ─── CORS & CSRF ──────────────────────────────────────────────────────────────
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+# ─── Security Headers ─────────────────────────────────────────────────────────
+SECURE_SSL_REDIRECT              = os.environ.get("SECURE_SSL_REDIRECT", "True").lower() == "true"
+SESSION_COOKIE_SECURE            = True
+CSRF_COOKIE_SECURE               = True
+SECURE_BROWSER_XSS_FILTER        = True
+SECURE_CONTENT_TYPE_NOSNIFF      = True
+X_FRAME_OPTIONS                  = "DENY"
+SECURE_HSTS_SECONDS              = 31536000   # 1 year
+SECURE_HSTS_INCLUDE_SUBDOMAINS   = True
+SECURE_HSTS_PRELOAD              = True
+SECURE_PROXY_SSL_HEADER          = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# ─── Cookie Auth (HttpOnly JWT) ───────────────────────────────────────────────
+# Override base.py defaults — always Secure in production
+JWT_COOKIE_SECURE   = True
+JWT_COOKIE_SAMESITE = os.environ.get("JWT_COOKIE_SAMESITE", "None")  # "None" needed for cross-site Vercel → Koyeb
+
+# ─── Production Logging ───────────────────────────────────────────────────────
+LOGGING["handlers"]["console"]["level"] = "WARNING"
+LOGGING["root"]["level"] = "WARNING"

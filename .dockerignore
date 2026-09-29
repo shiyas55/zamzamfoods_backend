@@ -1,0 +1,53 @@
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Secrets & Environment ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python artefacts ─────────────────────────────────────────────────────────
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info
+.eggs
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv
+venv
+env
+ENV
+
+# ── Django local files ────────────────────────────────────────────────────────
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+media/
+
+# ── Test & development files ─────────────────────────────────────────────────
+tests/
+backups/
+*.log
+test_*.py
+add_shops.py
+
+# ── Node / React (not needed in backend image) ────────────────────────────────
+node_modules
+frontend/
+dist/
+
+# ── IDE & OS ──────────────────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── CI/CD ─────────────────────────────────────────────────────────────────────
+.github

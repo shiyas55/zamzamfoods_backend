@@ -1,0 +1,22 @@
+# Zamzam Foods — Production Requirements
+# This flat file is used by Docker/Koyeb.
+# For development, use:  pip install -r requirements/development.txt
+
+# ─── Core Django & REST Framework ─────────────────────────────────────────────
+Django>=4.2,<5.0
+djangorestframework>=3.14.0
+djangorestframework-simplejwt>=5.3.0
+django-cors-headers>=4.3.0
+python-dotenv>=1.0.0
+drf-spectacular>=0.27.0
+
+# ─── Production Server & Database ─────────────────────────────────────────────
+gunicorn>=21.2.0
+psycopg2-binary>=2.9.9
+dj-database-url>=3.0.0
+
+# ─── Static Files ─────────────────────────────────────────────────────────────
+whitenoise>=6.6.0
+
+# ─── Supabase SDK (optional backend integration) ──────────────────────────────
+supabase>=2.0.0
