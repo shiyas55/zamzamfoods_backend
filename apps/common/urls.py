@@ -1,6 +1,12 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import ActivityLogViewSet, health_check, SystemSettingsView
+from .views import (
+    ActivityLogViewSet,
+    health_check,
+    SystemSettingsView,
+    DatabaseStatsView,
+    DatabaseBackupView,
+)
 
 router = DefaultRouter()
 router.register(r"activity-logs", ActivityLogViewSet, basename="activity-log")
@@ -8,4 +14,6 @@ router.register(r"activity-history", ActivityLogViewSet, basename="activity-hist
 
 urlpatterns = [
     path("settings/", SystemSettingsView.as_view(), name="system_settings"),
+    path("database/stats/", DatabaseStatsView.as_view(), name="database_stats"),
+    path("database/backup/", DatabaseBackupView.as_view(), name="database_backup"),
 ] + router.urls
