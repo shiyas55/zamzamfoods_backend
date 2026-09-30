@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 # ─── Cookie helpers ───────────────────────────────────────────────────────────
 
-COOKIE_SECURE = os.environ.get("JWT_COOKIE_SECURE", "False").lower() == "true"
-COOKIE_SAMESITE = os.environ.get("JWT_COOKIE_SAMESITE", "Lax")
+COOKIE_SECURE = getattr(settings, "JWT_COOKIE_SECURE", not settings.DEBUG or os.environ.get("JWT_COOKIE_SECURE", "True").lower() == "true")
+COOKIE_SAMESITE = getattr(settings, "JWT_COOKIE_SAMESITE", "None" if not settings.DEBUG else "Lax")
 ACCESS_COOKIE = "zamzam_access"
 REFRESH_COOKIE = "zamzam_refresh"
 
@@ -72,14 +72,15 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
-        path="/api/v1/auth/",  # Narrow path — only sent to auth endpoints
+        path="/",
     )
 
 
 def _clear_auth_cookies(response: Response) -> None:
     """Expire both auth cookies immediately."""
     response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth/")
+    response.delete_cookie(REFRESH_COOKIE, path="/")
+
 
 
 def _hash_token(raw_token: str) -> str:
