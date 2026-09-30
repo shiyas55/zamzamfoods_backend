@@ -42,6 +42,8 @@ class DriverSerializer(serializers.ModelSerializer):
     assigned_route_details = RouteSerializer(source="assigned_route", read_only=True)
     driver_name = serializers.SerializerMethodField()
     active_deliveries_count = serializers.SerializerMethodField()
+    name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Driver
@@ -53,6 +55,8 @@ class DriverSerializer(serializers.ModelSerializer):
             "assigned_route_details",
             "driver_name",
             "active_deliveries_count",
+            "name",
+            "password",
             "phone_number",
             "vehicle_number",
             "license_number",
@@ -78,6 +82,29 @@ class DriverSerializer(serializers.ModelSerializer):
             order__order_date=today,
             status__in=[Delivery.Status.ASSIGNED, Delivery.Status.IN_TRANSIT],
         ).count()
+
+    def update(self, instance, validated_data):
+        name = validated_data.pop("name", None)
+        password = validated_data.pop("password", None)
+        phone_number = validated_data.get("phone_number", None)
+
+        if instance.user:
+            user_changed = False
+            if name is not None and name.strip():
+                name_parts = name.strip().split(" ", 1)
+                instance.user.first_name = name_parts[0]
+                instance.user.last_name = name_parts[1] if len(name_parts) > 1 else ""
+                user_changed = True
+            if password is not None and password.strip():
+                instance.user.set_password(password.strip())
+                user_changed = True
+            if phone_number is not None:
+                instance.user.phone_number = phone_number.strip()
+                user_changed = True
+            if user_changed:
+                instance.user.save()
+
+        return super().update(instance, validated_data)
 
 
 class CreateDriverSerializer(serializers.ModelSerializer):

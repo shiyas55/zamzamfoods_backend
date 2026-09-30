@@ -111,7 +111,13 @@ class DriverViewSet(viewsets.ModelViewSet):
             entity_name=instance.driver_name,
             summary=f"Deleted driver profile for {instance.driver_name}",
         )
+        user = instance.user
         instance.delete()
+        if user and getattr(user, 'role', None) == "DRIVER":
+            try:
+                user.delete()
+            except Exception:
+                pass
 
     def get_queryset(self):
         user = self.request.user
