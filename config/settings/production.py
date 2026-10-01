@@ -49,19 +49,41 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 # ─── CORS & CSRF ──────────────────────────────────────────────────────────────
-CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
-    if origin.strip()
+def _normalize_origin(origin: str) -> str:
+    origin = origin.strip().rstrip("/")
+    if not origin:
+        return ""
+    if not (origin.startswith("http://") or origin.startswith("https://")):
+        # Prepend https:// if scheme is missing
+        origin = f"https://{origin}"
+    return origin
+
+_raw_cors = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+_cors_list = [_normalize_origin(o) for o in _raw_cors.split(",") if o.strip()]
+
+_default_origins = [
+    "https://zamzamfoods.up.railway.app",
+    "https://zamzamfood.up.railway.app",
+    "https://zamzamfoods-fontend.vercel.app",
+    "https://zamzamfoods-frontend.vercel.app",
+    "https://zamzamfoods.vercel.app",
 ]
+
+for d in _default_origins:
+    if d not in _cors_list:
+        _cors_list.append(d)
+
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = _cors_list
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
-    if origin.strip()
-]
+_raw_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+_csrf_list = [_normalize_origin(o) for o in _raw_csrf.split(",") if o.strip()]
+for d in _default_origins:
+    if d not in _csrf_list:
+        _csrf_list.append(d)
+
+CSRF_TRUSTED_ORIGINS = _csrf_list
 
 # ─── Security Headers ─────────────────────────────────────────────────────────
 SECURE_SSL_REDIRECT              = os.environ.get("SECURE_SSL_REDIRECT", "True").lower() == "true"
