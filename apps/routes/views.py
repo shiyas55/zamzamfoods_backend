@@ -77,9 +77,30 @@ class RouteViewSet(viewsets.ModelViewSet):
         if customer_count > 0:
             return Response(
                 {
-                    "error": f"Cannot delete '{route.name}' because {customer_count} customer shop(s) are assigned to it. Please reassign the shops first."
+                    "error": f"Cannot delete route '{route.name}' because {customer_count} customer shop(s) are assigned to it. Please reassign the shops first."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        order_count = route.orders.count()
+        if order_count > 0:
+            route.is_active = False
+            route.save(update_fields=["is_active", "updated_at"])
+            route.drivers.all().update(assigned_route=None)
+            from apps.common.audit import log_activity
+            log_activity(
+                user=self.request.user,
+                action="DEACTIVATED",
+                entity_type="ROUTE",
+                entity_id=route.id,
+                entity_name=route.name,
+                summary=f"Deactivated route '{route.name}' ({route.code}) as it has {order_count} historical order records.",
+            )
+            return Response(
+                {
+                    "message": f"Route '{route.name}' has {order_count} past orders on record. To preserve financial history, it has been marked inactive instead of being permanently removed."
+                },
+                status=status.HTTP_200_OK,
             )
 
         # Unlink any assigned drivers before deletion

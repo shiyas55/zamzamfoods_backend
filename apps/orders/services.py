@@ -9,9 +9,13 @@ from .models import Order, OrderItem, OrderActivityLog
 
 def generate_order_number():
     """Generates unique sequential order number for today."""
-    today_str = timezone.now().strftime("%Y%m%d")
+    today_str = timezone.localdate().strftime("%Y%m%d")
     count = Order.objects.filter(order_number__startswith=f"ORD-{today_str}").count() + 1
-    return f"ORD-{today_str}-{count:04d}"
+    order_num = f"ORD-{today_str}-{count:04d}"
+    while Order.objects.filter(order_number=order_num).exists():
+        count += 1
+        order_num = f"ORD-{today_str}-{count:04d}"
+    return order_num
 
 
 def create_order_service(customer_id, items_data, order_date=None, driver_id=None, notes="", created_by=None, shop_expense=None, shop_expense_notes="", source="MANAGER", entered_by_role="", entered_by_name="", entered_by_type="MANAGER"):
