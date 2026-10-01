@@ -21,14 +21,14 @@ from .serializers import (
 class RouteViewSet(viewsets.ModelViewSet):
     """
     CRUD for delivery routes.
-    - Owner/Manager: Full access to all routes.
+    - Owner/Manager: Full access to all routes (create, read, update, delete).
     - Driver: Isolated to their assigned route only.
     """
     serializer_class = RouteSerializer
 
     def get_permissions(self):
         if self.action in ["create", "update", "partial_update", "destroy"]:
-            return [IsOwner()]
+            return [IsManagerOrOwner()]
         return [permissions.IsAuthenticated()]
 
     def get_queryset(self):
@@ -46,6 +46,55 @@ class RouteViewSet(viewsets.ModelViewSet):
             return Route.objects.none()
 
         return Route.objects.none()
+
+    def perform_create(self, serializer):
+        route = serializer.save()
+        from apps.common.audit import log_activity
+        log_activity(
+            user=self.request.user,
+            action="CREATED",
+            entity_type="ROUTE",
+            entity_id=route.id,
+            entity_name=route.name,
+            summary=f"Created delivery route '{route.name}' ({route.code})",
+        )
+
+    def perform_update(self, serializer):
+        route = serializer.save()
+        from apps.common.audit import log_activity
+        log_activity(
+            user=self.request.user,
+            action="UPDATED",
+            entity_type="ROUTE",
+            entity_id=route.id,
+            entity_name=route.name,
+            summary=f"Updated delivery route '{route.name}' ({route.code})",
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        route = self.get_object()
+        customer_count = route.customers.count()
+        if customer_count > 0:
+            return Response(
+                {
+                    "error": f"Cannot delete '{route.name}' because {customer_count} customer shop(s) are assigned to it. Please reassign the shops first."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Unlink any assigned drivers before deletion
+        route.drivers.all().update(assigned_route=None)
+
+        from apps.common.audit import log_activity
+        log_activity(
+            user=self.request.user,
+            action="DELETED",
+            entity_type="ROUTE",
+            entity_id=route.id,
+            entity_name=route.name,
+            summary=f"Deleted delivery route '{route.name}' ({route.code})",
+        )
+        return super().destroy(request, *args, **kwargs)
 
 
 class DriverViewSet(viewsets.ModelViewSet):
