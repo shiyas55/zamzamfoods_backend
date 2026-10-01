@@ -77,9 +77,29 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
 
 
 def _clear_auth_cookies(response: Response) -> None:
-    """Expire both auth cookies immediately."""
-    response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(REFRESH_COOKIE, path="/")
+    """Expire both auth cookies immediately across all browsers."""
+    response.set_cookie(
+        ACCESS_COOKIE,
+        "",
+        max_age=0,
+        expires="Thu, 01 Jan 1970 00:00:00 GMT",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/",
+    )
+    response.set_cookie(
+        REFRESH_COOKIE,
+        "",
+        max_age=0,
+        expires="Thu, 01 Jan 1970 00:00:00 GMT",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/",
+    )
+    response.delete_cookie(ACCESS_COOKIE, path="/", samesite=COOKIE_SAMESITE)
+    response.delete_cookie(REFRESH_COOKIE, path="/", samesite=COOKIE_SAMESITE)
 
 
 
@@ -257,17 +277,16 @@ class CookieLogoutView(APIView):
     Revokes/blacklists the refresh token, deactivates the device session,
     and clears both auth cookies. The old refresh token cannot be reused.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        refresh_str = request.COOKIES.get(REFRESH_COOKIE)
+        refresh_str = request.COOKIES.get(REFRESH_COOKIE) or request.data.get("refresh")
 
         if refresh_str:
             token_hash = _hash_token(refresh_str)
 
             # Deactivate device session
             DeviceSession.objects.filter(
-                user=request.user,
                 refresh_token_hash=token_hash,
                 is_active=True,
             ).update(is_active=False)
@@ -278,6 +297,13 @@ class CookieLogoutView(APIView):
                 token.blacklist()
             except (TokenError, InvalidToken):
                 pass  # Already invalid — that's fine
+
+        # Also deactivate any active sessions if user is authenticated via Bearer
+        if request.user and request.user.is_authenticated:
+            DeviceSession.objects.filter(
+                user=request.user,
+                is_active=True,
+            ).update(is_active=False)
 
         response = Response({"detail": "Logged out successfully."}, status=status.HTTP_200_OK)
         _clear_auth_cookies(response)
