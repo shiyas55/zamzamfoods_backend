@@ -108,6 +108,7 @@ class CreateOrderSerializer(serializers.Serializer):
         order_date = attrs.get("order_date")
         if not order_date:
             order_date = timezone.localdate()
+        attrs["order_date"] = order_date
 
         source = attrs.get("source", "MANAGER")
         # Online customer self-orders can be placed anytime without requiring pre-opened daily sheet

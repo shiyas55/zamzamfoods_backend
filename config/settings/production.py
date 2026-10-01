@@ -26,12 +26,17 @@ DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "")
 if not DATABASE_URL_ENV:
     raise ValueError("DATABASE_URL must be set in production.")
 
+# Internal Railway network host (postgres.railway.internal or localhost) does not use SSL;
+# external hosts like Supabase (*.supabase.co / pooler.supabase.com) require SSL.
+_is_internal_db = any(h in DATABASE_URL_ENV for h in ["railway.internal", "localhost", "127.0.0.1"])
+_ssl_require = not _is_internal_db
+
 DATABASES = {
     "default": dj_database_url.parse(
         DATABASE_URL_ENV,
         conn_max_age=600,
         conn_health_checks=True,
-        ssl_require=True,
+        ssl_require=_ssl_require,
     )
 }
 
