@@ -64,9 +64,9 @@ _cors_list = [_normalize_origin(o) for o in _raw_cors.split(",") if o.strip()]
 _default_origins = [
     "https://zamzamfoods.up.railway.app",
     "https://zamzamfood.up.railway.app",
+    "https://zamzamfoods.vercel.app",
     "https://zamzamfoods-fontend.vercel.app",
     "https://zamzamfoods-frontend.vercel.app",
-    "https://zamzamfoods.vercel.app",
 ]
 
 for d in _default_origins:
@@ -75,6 +75,11 @@ for d in _default_origins:
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = _cors_list
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
+    r"^https://.*\.up\.railway\.app$",
+    r"^https://.*\.railway\.app$",
+]
 CORS_ALLOW_CREDENTIALS = True
 
 _raw_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
