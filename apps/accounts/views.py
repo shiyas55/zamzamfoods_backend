@@ -234,7 +234,10 @@ class CookieTokenRefreshView(APIView):
                 return resp
 
             # Rotate refresh token — update device session hash or auto-register if missing
-            old_token.blacklist()
+            try:
+                old_token.blacklist()
+            except Exception:
+                pass
             new_refresh = RefreshToken.for_user(user)
             new_access_str = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
@@ -255,7 +258,10 @@ class CookieTokenRefreshView(APIView):
 
         else:
             # Owner / other roles — simple rotation without device session tracking
-            old_token.blacklist()
+            try:
+                old_token.blacklist()
+            except Exception:
+                pass
             new_refresh = RefreshToken.for_user(user)
             new_access_str = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
