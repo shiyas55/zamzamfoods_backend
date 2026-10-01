@@ -1,7 +1,97 @@
+import datetime
 from django.db import transaction
 from django.utils import timezone
 from apps.orders.models import Order
+from apps.routes.models import Driver
 from .models import Delivery
+
+def generate_delivery_number(for_date=None):
+    """
+    Generates a unique, collision-proof sequential delivery dispatch number.
+    e.g. DEL-20261001-0001
+    """
+    if for_date is None:
+        target_date = timezone.localdate()
+    elif isinstance(for_date, str):
+        target_date = datetime.date.fromisoformat(for_date)
+    elif hasattr(for_date, "date"):
+        target_date = for_date.date()
+    else:
+        target_date = for_date
+
+    today_str = target_date.strftime("%Y%m%d")
+    count = Delivery.objects.filter(delivery_number__startswith=f"DEL-{today_str}").count() + 1
+    deliv_num = f"DEL-{today_str}-{count:04d}"
+    while Delivery.objects.filter(delivery_number=deliv_num).exists():
+        count += 1
+        deliv_num = f"DEL-{today_str}-{count:04d}"
+    return deliv_num
+
+
+def ensure_order_delivery(order, driver=None, route=None):
+    """
+    Ensures that an Order has a corresponding Delivery dispatch record assigned
+    to the correct driver and route.
+    If the order does not have a driver, attempts to resolve from the route's active driver.
+    Collision-safe, idempotent, atomic.
+    """
+    with transaction.atomic():
+        # Resolve route
+        target_route = route or order.route
+        if not target_route and order.customer and order.customer.route:
+            target_route = order.customer.route
+
+        # Resolve driver
+        target_driver = driver or order.driver
+        if not target_driver and target_route:
+            target_driver = target_route.drivers.filter(is_active=True).first()
+
+        order_updates = []
+        if target_route and order.route_id != target_route.id:
+            order.route = target_route
+            order_updates.append("route")
+        if target_driver and order.driver_id != target_driver.id:
+            order.driver = target_driver
+            order_updates.append("driver")
+        if order_updates:
+            order_updates.append("updated_at")
+            order.save(update_fields=order_updates)
+
+        if not target_driver or not target_route:
+            return None
+
+        # Check if Delivery already exists for this order
+        delivery = getattr(order, "delivery", None)
+        if not delivery:
+            try:
+                delivery = Delivery.objects.select_for_update().get(order=order)
+            except Delivery.DoesNotExist:
+                delivery = None
+
+        if delivery:
+            deliv_updates = []
+            if delivery.driver_id != target_driver.id:
+                delivery.driver = target_driver
+                deliv_updates.append("driver")
+            if delivery.route_id != target_route.id:
+                delivery.route = target_route
+                deliv_updates.append("route")
+            if deliv_updates:
+                deliv_updates.append("updated_at")
+                delivery.save(update_fields=deliv_updates)
+            return delivery
+
+        # Create new delivery dispatch
+        deliv_num = generate_delivery_number(for_date=order.order_date)
+        delivery = Delivery.objects.create(
+            order=order,
+            delivery_number=deliv_num,
+            driver=target_driver,
+            route=target_route,
+            status=Delivery.Status.ASSIGNED,
+        )
+        return delivery
+
 
 def complete_delivery_service(delivery_id, recipient_name="", notes="", user=None):
     """

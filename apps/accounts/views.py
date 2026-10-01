@@ -25,7 +25,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
-from apps.common.permissions import IsOwner
+from apps.common.permissions import IsOwner, IsManagerOrOwner
 from .models import User, DeviceSession
 from .serializers import (
     UserSerializer,
@@ -187,16 +187,33 @@ class CookieTokenRefreshView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        refresh_str = request.COOKIES.get(REFRESH_COOKIE) or request.data.get("refresh")
-        if not refresh_str:
+        candidate_tokens = []
+        payload_token = request.data.get("refresh") if isinstance(request.data, dict) else None
+        if payload_token and isinstance(payload_token, str) and payload_token.strip():
+            candidate_tokens.append(payload_token.strip())
+
+        cookie_token = request.COOKIES.get(REFRESH_COOKIE)
+        if cookie_token and isinstance(cookie_token, str) and cookie_token.strip():
+            if cookie_token.strip() not in candidate_tokens:
+                candidate_tokens.append(cookie_token.strip())
+
+        if not candidate_tokens:
             return Response(
                 {"detail": "No refresh token cookie or parameter present."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        try:
-            old_token = RefreshToken(refresh_str)
-        except (TokenError, InvalidToken):
+        old_token = None
+        refresh_str = None
+        for cand in candidate_tokens:
+            try:
+                old_token = RefreshToken(cand)
+                refresh_str = cand
+                break
+            except (TokenError, InvalidToken):
+                continue
+
+        if not old_token or not refresh_str:
             resp = Response(
                 {"detail": "Refresh token is invalid or expired."},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -286,9 +303,17 @@ class CookieLogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        refresh_str = request.COOKIES.get(REFRESH_COOKIE) or request.data.get("refresh")
+        tokens_to_revoke = []
+        payload_token = request.data.get("refresh") if isinstance(request.data, dict) else None
+        if payload_token and isinstance(payload_token, str) and payload_token.strip():
+            tokens_to_revoke.append(payload_token.strip())
 
-        if refresh_str:
+        cookie_token = request.COOKIES.get(REFRESH_COOKIE)
+        if cookie_token and isinstance(cookie_token, str) and cookie_token.strip():
+            if cookie_token.strip() not in tokens_to_revoke:
+                tokens_to_revoke.append(cookie_token.strip())
+
+        for refresh_str in tokens_to_revoke:
             token_hash = _hash_token(refresh_str)
 
             # Deactivate device session
@@ -302,7 +327,7 @@ class CookieLogoutView(APIView):
                 token = RefreshToken(refresh_str)
                 token.blacklist()
             except (TokenError, InvalidToken):
-                pass  # Already invalid — that's fine
+                pass  # Already invalid/blacklisted — idempotent
 
         # Also deactivate any active sessions if user is authenticated via Bearer
         if request.user and request.user.is_authenticated:
@@ -363,10 +388,10 @@ class MySessionsView(APIView):
 
 class UserViewSet(viewsets.ModelViewSet):
     """
-    User management endpoint (Owner only).
+    User management endpoint (Owner and Manager access).
     """
     queryset = User.objects.all().order_by("-date_joined")
-    permission_classes = [IsOwner]
+    permission_classes = [IsManagerOrOwner]
 
     def get_serializer_class(self):
         if self.action == "create":

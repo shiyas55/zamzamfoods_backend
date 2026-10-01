@@ -64,3 +64,58 @@ class AuthenticationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["username"], "test_owner")
         self.assertEqual(response.data["role"], "OWNER")
+
+    def test_token_refresh_prefers_valid_payload_even_with_stale_cookie(self):
+        login_url = reverse("api_v1:token_obtain_pair")
+        login_res = self.client.post(login_url, {
+            "username": "test_owner",
+            "password": "securepassword123"
+        })
+        valid_refresh = login_res.data["refresh"]
+
+        # Simulate browser having a stale cookie but sending valid refresh in payload
+        self.client.cookies["zamzam_refresh"] = "invalid_or_stale_token_string"
+
+        refresh_url = reverse("api_v1:token_refresh")
+        refresh_res = self.client.post(refresh_url, {"refresh": valid_refresh})
+        self.assertEqual(refresh_res.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_res.data)
+        self.assertIn("refresh", refresh_res.data)
+
+    def test_token_refresh_falls_back_to_cookie_when_payload_missing(self):
+        login_url = reverse("api_v1:token_obtain_pair")
+        login_res = self.client.post(login_url, {
+            "username": "test_owner",
+            "password": "securepassword123"
+        })
+        valid_refresh = login_res.data["refresh"]
+
+        # Set cookie and send request with empty body
+        self.client.cookies["zamzam_refresh"] = valid_refresh
+        refresh_url = reverse("api_v1:token_refresh")
+        refresh_res = self.client.post(refresh_url, {})
+        self.assertEqual(refresh_res.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_res.data)
+
+    def test_logout_is_idempotent_and_blacklists_token(self):
+        login_url = reverse("api_v1:token_obtain_pair")
+        login_res = self.client.post(login_url, {
+            "username": "test_owner",
+            "password": "securepassword123"
+        })
+        refresh_token = login_res.data["refresh"]
+
+        logout_url = reverse("api_v1:cookie_logout")
+        # First logout
+        logout_res1 = self.client.post(logout_url, {"refresh": refresh_token})
+        self.assertEqual(logout_res1.status_code, status.HTTP_200_OK)
+
+        # Second logout with same token should be completely idempotent (200 OK)
+        logout_res2 = self.client.post(logout_url, {"refresh": refresh_token})
+        self.assertEqual(logout_res2.status_code, status.HTTP_200_OK)
+
+        # Refresh with blacklisted token should fail with 401
+        refresh_url = reverse("api_v1:token_refresh")
+        refresh_res = self.client.post(refresh_url, {"refresh": refresh_token})
+        self.assertEqual(refresh_res.status_code, status.HTTP_401_UNAUTHORIZED)
+
