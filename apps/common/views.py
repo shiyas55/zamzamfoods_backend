@@ -164,8 +164,8 @@ class DatabaseStatsView(APIView):
             if db_path and os.path.exists(str(db_path)):
                 total_size_bytes = os.path.getsize(str(db_path))
 
-        # Standard quota baseline: 1 GB (1024 MB)
-        storage_quota_bytes = 1024 * 1024 * 1024
+        # Supabase PostgreSQL Storage Quota: 500 MB (Free tier limit)
+        storage_quota_bytes = 500 * 1024 * 1024
         usage_pct = min(100.0, round((total_size_bytes / storage_quota_bytes) * 100, 2))
 
         if total_size_bytes < 1024:
@@ -211,22 +211,29 @@ class DatabaseStatsView(APIView):
             })
 
         status_label = "healthy"
-        if usage_pct > 85:
+        alert_message = None
+        if usage_pct >= 95 or total_size_bytes >= 475 * 1024 * 1024:
             status_label = "critical"
-        elif usage_pct > 65:
+            alert_message = f"CRITICAL: Database storage is FULL ({size_formatted} of 500 MB). Supabase enforces read-only mode at 500 MB, which will block new orders and logins. Please download a database backup immediately and prune old audit logs or upgrade your Supabase tier."
+        elif usage_pct >= 80 or total_size_bytes >= 400 * 1024 * 1024:
             status_label = "warning"
+            alert_message = f"WARNING: Database storage has reached {usage_pct}% ({size_formatted} of 500 MB). When 500 MB is reached, Supabase restricts write access. Please generate a backup and archive old records soon."
+
+        supabase_rest_url = os.environ.get("SUPABASE_REST_URL", "https://mfrakyarmmnvsvzlyota.supabase.co/rest/v1/")
 
         return Response({
-            "engine": db_engine.upper(),
+            "engine": "SUPABASE POSTGRESQL" if "supabase" in os.environ.get("DATABASE_URL", "").lower() or db_engine == "postgresql" else db_engine.upper(),
             "size_bytes": total_size_bytes,
             "size_formatted": size_formatted,
             "quota_bytes": storage_quota_bytes,
-            "quota_formatted": "1.00 GB",
+            "quota_formatted": "500 MB",
             "usage_pct": usage_pct,
             "total_records": total_records,
             "table_count": len(breakdown),
             "modules": breakdown,
             "status": status_label,
+            "alert_message": alert_message,
+            "supabase_api_url": supabase_rest_url,
             "checked_at": timezone.now().isoformat(),
         })
 
