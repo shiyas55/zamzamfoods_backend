@@ -6,6 +6,7 @@ from .views import (
     SystemSettingsView,
     DatabaseStatsView,
     DatabaseBackupView,
+    DatabaseRestoreView,
 )
 
 router = DefaultRouter()
@@ -16,4 +17,5 @@ urlpatterns = [
     path("settings/", SystemSettingsView.as_view(), name="system_settings"),
     path("database/stats/", DatabaseStatsView.as_view(), name="database_stats"),
     path("database/backup/", DatabaseBackupView.as_view(), name="database_backup"),
+    path("database/restore/", DatabaseRestoreView.as_view(), name="database_restore"),
 ] + router.urls

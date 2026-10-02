@@ -27,7 +27,9 @@ class RouteViewSet(viewsets.ModelViewSet):
     serializer_class = RouteSerializer
 
     def get_permissions(self):
-        if self.action in ["create", "update", "partial_update", "destroy"]:
+        if self.action == "destroy":
+            return [IsOwner()]
+        if self.action in ["create", "update", "partial_update"]:
             return [IsManagerOrOwner()]
         return [permissions.IsAuthenticated()]
 

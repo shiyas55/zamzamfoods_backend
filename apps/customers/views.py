@@ -53,6 +53,19 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
         return queryset.order_by("route__name", "name")
 
+    def destroy(self, request, *args, **kwargs):
+        from django.db.models import ProtectedError
+        instance = self.get_object()
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            return Response(
+                {
+                    "detail": "Cannot delete this customer shop because it has existing orders, payments, or delivery history. You can deactivate the shop instead to maintain financial audit integrity."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     @extend_schema(responses={200: CustomerPricingOverviewItemSerializer(many=True)})
     @action(detail=True, methods=["get", "post"], url_path="pricing")
     def pricing(self, request, pk=None):

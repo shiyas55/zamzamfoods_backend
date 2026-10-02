@@ -18,7 +18,7 @@ def generate_order_number():
     return order_num
 
 
-def create_order_service(customer_id, items_data, order_date=None, driver_id=None, notes="", created_by=None, shop_expense=None, shop_expense_notes="", source="MANAGER", entered_by_role="", entered_by_name="", entered_by_type="MANAGER"):
+def create_order_service(customer_id, items_data, order_date=None, driver_id=None, notes="", created_by=None, shop_expense=None, shop_expense_notes="", source="MANAGER", entered_by_role="", entered_by_name="", entered_by_type="MANAGER", order_number=None):
     """
     Atomic business transaction to create an order with line items.
     """
@@ -38,7 +38,12 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=Non
         elif route:
             driver = route.drivers.filter(is_active=True).first()
 
-        order_number = generate_order_number()
+        if not order_number or not str(order_number).strip():
+            order_number = generate_order_number()
+        else:
+            order_number = str(order_number).strip()
+            if Order.objects.filter(order_number=order_number).exists():
+                order_number = f"{order_number}-{generate_order_number().split('-')[-1]}"
 
         # Determine initial status based on source
         initial_status = Order.Status.LOCKED if source in ["MANAGER", "OWNER"] else Order.Status.SUBMITTED

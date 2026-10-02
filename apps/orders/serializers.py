@@ -58,8 +58,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "entered_by_name",
             "created_at",
             "updated_at",
+            "submitted_at",
         ]
-        read_only_fields = ["id", "order_number", "total_amount", "created_at", "updated_at", "source", "entered_by_role", "entered_by_name"]
+        read_only_fields = ["id", "order_number", "total_amount", "created_at", "updated_at", "submitted_at", "source", "entered_by_role", "entered_by_name"]
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_driver_name(self, obj):
@@ -97,6 +98,7 @@ class CreateOrderSerializer(serializers.Serializer):
     entered_by_role = serializers.CharField(required=False, allow_blank=True, default="")
     entered_by_name = serializers.CharField(required=False, allow_blank=True, default="")
     entered_by_type = serializers.CharField(required=False, allow_blank=True, default="MANAGER")
+    order_number = serializers.CharField(required=False, allow_blank=True, default="")
     items = OrderItemCreateInputSerializer(many=True)
 
     def validate_items(self, value):
@@ -138,6 +140,7 @@ class CreateOrderSerializer(serializers.Serializer):
         shop_expense = validated_data.get("shop_expense", Decimal("0.00"))
         shop_expense_notes = validated_data.get("shop_expense_notes", "")
         notes = validated_data.get("notes", "")
+        order_number = validated_data.get("order_number", "").strip() or None
 
         return create_order_service(
             customer_id=customer_id,
@@ -152,6 +155,7 @@ class CreateOrderSerializer(serializers.Serializer):
             entered_by_role=validated_data.get("entered_by_role", ""),
             entered_by_name=validated_data.get("entered_by_name", ""),
             entered_by_type=validated_data.get("entered_by_type", "MANAGER"),
+            order_number=order_number,
         )
 
 

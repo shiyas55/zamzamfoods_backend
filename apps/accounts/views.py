@@ -391,7 +391,7 @@ class UserViewSet(viewsets.ModelViewSet):
     User management endpoint (Owner and Manager access).
     """
     queryset = User.objects.all().order_by("-date_joined")
-    permission_classes = [IsManagerOrOwner]
+    permission_classes = [IsOwner]
 
     def get_serializer_class(self):
         if self.action == "create":
