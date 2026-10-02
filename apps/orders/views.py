@@ -80,8 +80,10 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.status in [Order.Status.LOCKED, Order.Status.BILLING, Order.Status.DELIVERY_CREATED, Order.Status.COMPLETED]:
-            raise PermissionDenied(f"Cannot delete order because its status is {instance.get_status_display()}.")
+        user = request.user
+        if not (user.is_superuser or user.role == "OWNER"):
+            if instance.status in [Order.Status.LOCKED, Order.Status.BILLING, Order.Status.DELIVERY_CREATED, Order.Status.COMPLETED, Order.Status.DELIVERED]:
+                raise PermissionDenied(f"Cannot delete order because its status is {instance.get_status_display()}.")
         return super().destroy(request, *args, **kwargs)
         
     @action(detail=True, methods=["post"], permission_classes=[IsManagerOrOwner])

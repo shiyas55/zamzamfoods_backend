@@ -16,12 +16,14 @@ ENV DJANGO_ENV=production
 WORKDIR /app
 
 # ── Install system dependencies ───────────────────────────────────────────────
-# libpq-dev is required for psycopg2 compilation (included in psycopg2-binary)
+# libpq-dev is required for psycopg2 compilation, postgresql-client provides pg_dump
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
+
 
 # ── Install Python dependencies ───────────────────────────────────────────────
 COPY requirements.txt .
