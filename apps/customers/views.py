@@ -1,5 +1,6 @@
 from decimal import Decimal
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Prefetch, Q
+from django.utils import timezone
 from rest_framework import viewsets, permissions, filters, status, serializers as drf_serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -37,7 +38,18 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Customer.objects.none()
 
-        queryset = Customer.objects.select_related("route").all()
+        today = timezone.localdate()
+        active_prices_pref = Prefetch(
+            "custom_prices",
+            queryset=CustomerProductPrice.objects.filter(
+                is_active=True,
+                effective_from__lte=today,
+            ).filter(
+                Q(effective_to__isnull=True) | Q(effective_to__gte=today)
+            ).order_by("effective_from", "created_at"),
+            to_attr="prefetched_custom_prices",
+        )
+        queryset = Customer.objects.select_related("route").prefetch_related(active_prices_pref).all()
 
         # Route filter query param (for managers/owners)
         route_id = self.request.query_params.get("route")
@@ -269,6 +281,40 @@ class CustomerViewSet(viewsets.ModelViewSet):
         }
         return Response(data)
 
+    @extend_schema(responses={200: drf_serializers.DictField()})
+    @action(detail=True, methods=["post"], url_path="set-balance", permission_classes=[IsManagerOrOwner])
+    def set_balance(self, request, pk=None):
+        """
+        Directly sets the customer's current balance / previous due from Fast Order Entry.
+        Creates an audit ledger adjustment record and updates current_balance in DB.
+        """
+        customer = self.get_object()
+        balance_raw = request.data.get("balance")
+        if balance_raw is None:
+            return Response({"detail": "balance field is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            new_balance = Decimal(str(balance_raw)).quantize(Decimal("0.01"))
+            if new_balance < 0:
+                return Response({"detail": "Balance cannot be negative."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"detail": "Invalid balance format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.credits.services import record_adjustment_service
+        delta = (new_balance - customer.current_balance).quantize(Decimal("0.01"))
+        if delta != Decimal("0.00"):
+            record_adjustment_service(
+                customer_id=customer.id,
+                amount=delta,
+                notes=request.data.get("notes") or f"Previous due set to ₹{new_balance} from Fast Wholesale Entry",
+                recorded_by=request.user,
+            )
+        customer.refresh_from_db()
+        return Response({
+            "id": str(customer.id),
+            "name": customer.name,
+            "current_balance": str(customer.current_balance),
+        }, status=status.HTTP_200_OK)
+
 
 class CustomerProductPriceViewSet(viewsets.ModelViewSet):
     """
@@ -298,6 +344,14 @@ class CustomerProductPriceViewSet(viewsets.ModelViewSet):
         return queryset.order_by("customer__name", "product__name")
 
     def perform_create(self, serializer):
+        customer = serializer.validated_data.get("customer")
+        product = serializer.validated_data.get("product")
+        if customer and product and serializer.validated_data.get("is_active", True):
+            CustomerProductPrice.objects.filter(
+                customer=customer,
+                product=product,
+                is_active=True
+            ).update(is_active=False, updated_by=self.request.user)
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
     def perform_update(self, serializer):
