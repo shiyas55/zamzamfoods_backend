@@ -7,17 +7,22 @@ from .models import Customer, CustomerProductPrice
 def get_effective_product_price(customer, product):
     """
     Determines effective selling price for a customer and product:
-    1. Checks active CustomerProductPrice for this (customer, product).
+    1. Checks active CustomerProductPrice for this (customer, product) valid today.
     2. Falls back to product.unit_price if no custom price exists.
     Returns: (price: Decimal, is_custom: bool, price_record_id: Optional[str])
     """
+    today = timezone.localdate()
+    from django.db.models import Q
     custom_price_obj = CustomerProductPrice.objects.filter(
         customer=customer,
         product=product,
-        is_active=True
+        is_active=True,
+        effective_from__lte=today,
+    ).filter(
+        Q(effective_to__isnull=True) | Q(effective_to__gte=today)
     ).order_by("-effective_from", "-created_at").first()
 
-    if custom_price_obj:
+    if custom_price_obj and custom_price_obj.price > Decimal("0.00"):
         return custom_price_obj.price, True, str(custom_price_obj.id)
     return product.unit_price, False, None
 
@@ -26,6 +31,7 @@ def set_customer_product_price(customer=None, product=None, price=None, effectiv
     """
     Configures or updates customer-specific wholesale price for a product.
     Deactivates any previous active price for this customer+product.
+    If price is 0, deactivates custom pricing so it falls back to standard product price.
     """
     if customer is None and customer_id is not None:
         customer = customer_id
@@ -57,6 +63,10 @@ def set_customer_product_price(customer=None, product=None, price=None, effectiv
             product=prod_obj,
             is_active=True
         ).update(is_active=False, updated_by=user)
+
+        if price == Decimal("0.00"):
+            # Setting price to 0 clears/resets custom rate back to standard base price
+            return None
 
         # Create new active price
         new_price = CustomerProductPrice.objects.create(

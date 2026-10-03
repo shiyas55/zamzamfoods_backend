@@ -69,11 +69,16 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=Non
         # Resolve unit prices for items
         for pid, item in aggregated_items.items():
             product = Product.objects.get(id=pid)
+            from apps.customers.services import get_effective_product_price
+            effective_price, has_custom, _ = get_effective_product_price(customer, product)
             if "unit_price" in item and item["unit_price"] is not None and str(item["unit_price"]).strip() != "":
-                u_price = Decimal(str(item["unit_price"]))
+                sent_price = Decimal(str(item["unit_price"]))
+                if has_custom and sent_price == product.unit_price:
+                    u_price = effective_price
+                else:
+                    u_price = sent_price
             else:
-                from apps.customers.services import get_effective_product_price
-                u_price, _, _ = get_effective_product_price(customer, product)
+                u_price = effective_price
             item["resolved_unit_price"] = u_price
             item["product_obj"] = product
 
@@ -240,11 +245,16 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
             for pid, item in aggregated_items.items():
                 product = Product.objects.get(id=pid)
                 quantity = item["quantity"]
+                from apps.customers.services import get_effective_product_price
+                effective_price, has_custom, _ = get_effective_product_price(order.customer, product)
                 if "unit_price" in item and item["unit_price"] is not None and str(item["unit_price"]).strip() != "":
-                    unit_price = Decimal(str(item["unit_price"]))
+                    sent_price = Decimal(str(item["unit_price"]))
+                    if has_custom and sent_price == product.unit_price:
+                        unit_price = effective_price
+                    else:
+                        unit_price = sent_price
                 else:
-                    from apps.customers.services import get_effective_product_price
-                    unit_price, _, _ = get_effective_product_price(order.customer, product)
+                    unit_price = effective_price
 
                 subtotal = (Decimal(quantity) * unit_price).quantize(Decimal("0.01"))
                 OrderItem.objects.create(

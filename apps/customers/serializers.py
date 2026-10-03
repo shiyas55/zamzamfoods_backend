@@ -16,6 +16,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     is_credit_exceeded = serializers.BooleanField(read_only=True)
     credit_limit = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("5000.00"))
     product_prices = CustomerProductPriceInputSerializer(many=True, required=False, write_only=True)
+    custom_prices = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Customer
@@ -35,10 +36,31 @@ class CustomerSerializer(serializers.ModelSerializer):
             "is_credit_exceeded",
             "is_active",
             "product_prices",
+            "custom_prices",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "current_balance", "is_credit_exceeded", "created_at", "updated_at"]
+        read_only_fields = ["id", "current_balance", "is_credit_exceeded", "custom_prices", "created_at", "updated_at"]
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_custom_prices(self, obj):
+        prices = {}
+        if hasattr(obj, "prefetched_custom_prices"):
+            items = obj.prefetched_custom_prices
+        else:
+            from django.utils import timezone
+            from django.db.models import Q
+            today = timezone.localdate()
+            items = obj.custom_prices.filter(
+                is_active=True,
+                effective_from__lte=today,
+            ).filter(
+                Q(effective_to__isnull=True) | Q(effective_to__gte=today)
+            ).order_by("effective_from", "created_at")
+        for cp in items:
+            if cp.price and Decimal(str(cp.price)) > Decimal("0.00"):
+                prices[str(cp.product_id)] = str(cp.price)
+        return prices
 
     def validate_credit_limit(self, value):
         if value is not None and value < Decimal("0.00"):
