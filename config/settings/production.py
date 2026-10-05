@@ -60,7 +60,7 @@ def _normalize_origin(origin: str) -> str:
     origin = origin.strip().rstrip("/")
     if not origin:
         return ""
-    if not (origin.startswith("http://") or origin.startswith("https://")):
+    if not (origin.startswith("http://") or origin.startswith("https://") or origin.startswith("tauri://")):
         # Prepend https:// if scheme is missing
         origin = f"https://{origin}"
     return origin
@@ -74,6 +74,11 @@ _default_origins = [
     "https://zamzamfoods.vercel.app",
     "https://zamzamfoods-fontend.vercel.app",
     "https://zamzamfoods-frontend.vercel.app",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+    "http://localhost:5173",
 ]
 
 for d in _default_origins:
@@ -86,6 +91,8 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.vercel\.app$",
     r"^https://.*\.up\.railway\.app$",
     r"^https://.*\.railway\.app$",
+    r"^tauri://.*$",
+    r"^https?://tauri\.localhost$",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
