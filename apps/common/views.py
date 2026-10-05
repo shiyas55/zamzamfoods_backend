@@ -304,8 +304,15 @@ class DatabaseStatsView(APIView):
 
         supabase_rest_url = os.environ.get("SUPABASE_REST_URL", "https://mfrakyarmmnvsvzlyota.supabase.co/rest/v1/")
 
+        if db_engine == "postgresql":
+            actual_engine = "SUPABASE POSTGRESQL" if "supabase" in str(connection.settings_dict.get("HOST", "")).lower() else "POSTGRESQL"
+        elif db_engine == "sqlite":
+            actual_engine = "LOCAL SQLITE"
+        else:
+            actual_engine = db_engine.upper()
+
         return Response({
-            "engine": "SUPABASE POSTGRESQL" if "supabase" in os.environ.get("DATABASE_URL", "").lower() or db_engine == "postgresql" else db_engine.upper(),
+            "engine": actual_engine,
             "size_bytes": total_size_bytes,
             "size_formatted": size_formatted,
             "quota_bytes": storage_quota_bytes,
@@ -1253,6 +1260,13 @@ class DatabaseClearAllView(APIView):
             )
 
         total_deleted = sum(deleted_counts.values())
+        from django.db import connection
+        if connection.vendor == "sqlite":
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("VACUUM;")
+            except Exception:
+                pass
 
         return Response({
             "success": True,
