@@ -50,6 +50,11 @@ urlpatterns = [
     path("api/v1/", include((api_v1_patterns, "api_v1"))),
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+from django.views.static import serve
+from django.urls import re_path
+
+# Serve media files (fallback for local files when accessed in production or development)
+urlpatterns += [
+    re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+]
 
