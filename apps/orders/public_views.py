@@ -93,6 +93,18 @@ class PublicCustomerOrderView(views.APIView):
                 "is_self_order_enabled": False,
             }, status=status.HTTP_403_FORBIDDEN)
 
+        # IP rate limiting protection
+        from django.core.cache import cache
+        ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+        cache_key = f"public_order_rate_{ip}"
+        recent_orders = cache.get(cache_key, 0)
+        if recent_orders >= 30:
+            return Response(
+                {"error": "Too many orders submitted in a short period. Please wait a minute before submitting again."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        cache.set(cache_key, recent_orders + 1, timeout=60)
+
         # Inject source and identities
         data = request.data.copy()
         data["customer_id"] = str(customer.id)
