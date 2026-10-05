@@ -192,7 +192,14 @@ class CreateOrderSerializer(serializers.Serializer):
         if closing and closing.is_closed:
             raise serializers.ValidationError({"detail": f"Business day {order_date} is closed. Data entry is not allowed."})
         if closing and not closing.is_opened:
-            raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before entering orders."})
+            request = self.context.get("request")
+            user = request.user if request else None
+            is_privileged = user and (getattr(user, "role", "") in ["MANAGER", "OWNER"] or user.is_staff or user.is_superuser)
+            if is_privileged or Order.objects.filter(order_date=order_date).exists():
+                closing.is_opened = True
+                closing.save(update_fields=["is_opened", "updated_at"])
+            else:
+                raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before entering orders."})
         return attrs
 
     def create(self, validated_data):
@@ -247,7 +254,8 @@ class UpdateOrderSerializer(serializers.Serializer):
             if closing and closing.is_closed:
                 raise serializers.ValidationError({"detail": f"Business day {order_date} is closed. Data modification is not allowed."})
             if closing and not closing.is_opened:
-                raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before modifying orders."})
+                closing.is_opened = True
+                closing.save(update_fields=["is_opened", "updated_at"])
         return attrs
 
     def update(self, instance, validated_data):
