@@ -134,16 +134,33 @@ class VerifySettingsPinView(APIView):
     """
     POST /api/v1/settings/verify-pin/
     Verifies if entered 4-digit PIN matches the stored settings_pin_code (Default: 7667).
+    Enforces brute-force lockout after 10 consecutive failed attempts per IP.
     """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        from django.core.cache import cache
         from .models import SystemSettings
+
+        ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "unknown")
+        cache_key = f"pin_attempts_{ip}"
+        failed_attempts = cache.get(cache_key, 0)
+
+        if failed_attempts >= 10:
+            return Response(
+                {"valid": False, "error": "Too many failed PIN attempts. Please wait 5 minutes before trying again."},
+                status=429
+            )
+
         pin = str(request.data.get("pin") or "").strip()
         settings_obj = SystemSettings.get_settings()
         expected_pin = settings_obj.settings_pin_code or "7667"
+
         if pin == expected_pin:
+            cache.delete(cache_key)
             return Response({"valid": True, "message": "PIN verified successfully."})
+
+        cache.set(cache_key, failed_attempts + 1, timeout=300)
         return Response({"valid": False, "error": "Incorrect PIN code. Please try again."}, status=400)
 
 

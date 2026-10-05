@@ -37,6 +37,8 @@ db.sqlite3-journal
 media/
 staticfiles/
 static_root/
+backups/
+*.bak
 
 # IDE
 .vscode/
