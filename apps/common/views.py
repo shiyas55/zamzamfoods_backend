@@ -690,11 +690,111 @@ class DatabaseRestoreView(APIView):
                 }, status=400)
 
             restored_count = 0
+            skipped_duplicates = 0
+
+            def _resolve_conflicts_before_save(instance):
+                model_cls = instance.__class__
+                # 1. Unique together combinations (e.g. OrderItem order+product, CustomerProductPrice customer+product, etc.)
+                if hasattr(model_cls._meta, "unique_together") and model_cls._meta.unique_together:
+                    for unique_combo in model_cls._meta.unique_together:
+                        filter_kwargs = {}
+                        valid = True
+                        for field_name in unique_combo:
+                            fk_id_name = f"{field_name}_id"
+                            if hasattr(instance, fk_id_name):
+                                val = getattr(instance, fk_id_name)
+                            elif hasattr(instance, field_name):
+                                val = getattr(instance, field_name)
+                                if hasattr(val, "pk"):
+                                    val = val.pk
+                            else:
+                                valid = False
+                                break
+                            if val is None:
+                                valid = False
+                                break
+                            filter_kwargs[field_name] = val
+
+                        if valid and filter_kwargs:
+                            try:
+                                model_cls.objects.filter(**filter_kwargs).exclude(pk=instance.pk).delete()
+                            except Exception:
+                                pass
+
+                # 2. Specific unique leaf/item models (explicit safety nets)
+                app_lbl = getattr(model_cls._meta, "app_label", "")
+                mod_name = getattr(model_cls._meta, "model_name", "")
+                if app_lbl == "orders" and mod_name == "orderitem":
+                    try:
+                        from apps.orders.models import OrderItem
+                        OrderItem.objects.filter(
+                            order_id=instance.order_id,
+                            product_id=instance.product_id
+                        ).exclude(pk=instance.pk).delete()
+                    except Exception:
+                        pass
+                elif app_lbl == "customers" and mod_name == "customerproductprice":
+                    try:
+                        from apps.customers.models import CustomerProductPrice
+                        CustomerProductPrice.objects.filter(
+                            customer_id=instance.customer_id,
+                            product_id=instance.product_id
+                        ).exclude(pk=instance.pk).delete()
+                    except Exception:
+                        pass
+                elif app_lbl == "deliveries" and mod_name == "delivery":
+                    try:
+                        from apps.deliveries.models import Delivery
+                        Delivery.objects.filter(order_id=instance.order_id).exclude(pk=instance.pk).delete()
+                    except Exception:
+                        pass
+                elif app_lbl == "reports" and mod_name == "dailyclosing":
+                    try:
+                        from apps.reports.models import DailyClosing
+                        DailyClosing.objects.filter(date=instance.date).exclude(pk=instance.pk).delete()
+                    except Exception:
+                        pass
+
             try:
                 with transaction.atomic():
                     for deserialized_obj in serializers.deserialize("python", objects_to_deserialize, ignorenonexistent=True):
-                        deserialized_obj.save()
-                        restored_count += 1
+                        instance = deserialized_obj.object
+                        if hasattr(instance, "created_at") and not getattr(instance, "created_at", None):
+                            instance.created_at = timezone.now()
+                        if hasattr(instance, "updated_at") and not getattr(instance, "updated_at", None):
+                            instance.updated_at = timezone.now()
+                        _resolve_conflicts_before_save(instance)
+
+                        # Wrap each entity save in an inner atomic block (savepoint)
+                        # so that an isolated duplicate key violation never breaks the entire restoration
+                        try:
+                            with transaction.atomic():
+                                deserialized_obj.save()
+                                restored_count += 1
+                        except Exception as entity_err:
+                            err_str = str(entity_err).lower()
+                            if "unique constraint" in err_str or "duplicate key" in err_str:
+                                # For OrderItem: update existing row in place
+                                if getattr(instance._meta, "app_label", "") == "orders" and getattr(instance._meta, "model_name", "") == "orderitem":
+                                    from apps.orders.models import OrderItem
+                                    existing = OrderItem.objects.filter(
+                                        order_id=instance.order_id,
+                                        product_id=instance.product_id
+                                    ).first()
+                                    if existing:
+                                        existing.quantity = instance.quantity
+                                        existing.unit_price = instance.unit_price
+                                        existing.subtotal = instance.subtotal
+                                        if hasattr(instance, "entered_by_type"):
+                                            existing.entered_by_type = instance.entered_by_type
+                                        if hasattr(instance, "entered_by_user_id"):
+                                            existing.entered_by_user_id = instance.entered_by_user_id
+                                        existing.save()
+                                        restored_count += 1
+                                        continue
+                                skipped_duplicates += 1
+                            else:
+                                raise entity_err
             except Exception as e:
                 return Response({"error": f"Failed during JSON entity restoration: {str(e)}"}, status=400)
 
@@ -705,8 +805,8 @@ class DatabaseRestoreView(APIView):
                 entity_type="SYSTEM_RESTORE",
                 entity_id=f"restore_{timezone.now().strftime('%Y%m%d_%H%M%S')}",
                 entity_name="Database JSON Import",
-                summary=f"Successfully restored {restored_count} entities from JSON file '{filename}'.",
-                details={"filename": filename, "format": "json", "records_restored": restored_count},
+                summary=f"Successfully restored {restored_count} entities (skipped {skipped_duplicates} duplicate records) from JSON file '{filename}'.",
+                details={"filename": filename, "format": "json", "records_restored": restored_count, "skipped_duplicates": skipped_duplicates},
             )
 
             return Response({
