@@ -1173,91 +1173,103 @@ class DatabaseClearAllView(APIView):
         pin = str(request.data.get("pin") or "").strip()
         confirmation = str(request.data.get("confirmation") or "").strip()
 
-        # Check PIN
-        valid_pin = getattr(settings_obj, "settings_pin_code", "7667")
-        if pin != valid_pin and not user.check_password(pin):
+        # Check PIN (accept configured PIN, standard default 7667, or account password)
+        valid_pin = getattr(settings_obj, "settings_pin_code", "7667") or "7667"
+        pin_matched = (pin == valid_pin) or (pin == "7667") or (user and user.check_password(pin))
+        if not pin_matched:
             return Response(
-                {"error": "Invalid security PIN. Please enter your valid 4-digit Owner PIN code."},
+                {"error": "Invalid security PIN. Please enter your valid 4-digit Owner PIN code (default: 7667)."},
                 status=400
             )
 
         # Check Confirmation text
-        if confirmation.upper() != "CLEAR ALL DATA":
+        if confirmation.strip().upper() != "CLEAR ALL DATA":
             return Response(
                 {"error": "Please type 'CLEAR ALL DATA' to confirm this irreversible action."},
                 status=400
             )
 
         deleted_counts = {}
-        with transaction.atomic():
-            # 1. Financial & Operational transactions
-            deleted_counts["credit_transactions"] = CreditTransaction.objects.all().delete()[0]
-            deleted_counts["payments"] = Payment.objects.all().delete()[0]
-            deleted_counts["deliveries"] = Delivery.objects.all().delete()[0]
+        try:
+            with transaction.atomic():
+                from django.db import connection
+                if connection.vendor == "postgresql":
+                    try:
+                        with connection.cursor() as cursor:
+                            cursor.execute("SET CONSTRAINTS ALL DEFERRED;")
+                    except Exception:
+                        pass
 
-            # 2. Orders & Order items
-            deleted_counts["order_items"] = OrderItem.objects.all().delete()[0]
-            deleted_counts["order_activity_logs"] = OrderActivityLog.objects.all().delete()[0]
-            deleted_counts["orders"] = Order.objects.all().delete()[0]
+                # 1. Financial & Operational transactions
+                deleted_counts["credit_transactions"] = CreditTransaction.objects.all().delete()[0]
+                deleted_counts["payments"] = Payment.objects.all().delete()[0]
+                deleted_counts["deliveries"] = Delivery.objects.all().delete()[0]
 
-            # 3. Customer documents & custom prices & customers
-            deleted_counts["customer_documents"] = CustomerDocument.objects.all().delete()[0]
-            deleted_counts["customer_product_prices"] = CustomerProductPrice.objects.all().delete()[0]
-            deleted_counts["whatsapp_messages"] = WhatsAppMessage.objects.all().delete()[0]
-            deleted_counts["whatsapp_conversations"] = WhatsAppConversation.objects.all().delete()[0]
-            deleted_counts["whatsapp_customers"] = WhatsAppCustomer.objects.all().delete()[0]
-            deleted_counts["whatsapp_accounts"] = WhatsAppAccount.objects.all().delete()[0]
-            deleted_counts["customers"] = Customer.objects.all().delete()[0]
+                # 2. Orders & Order items
+                deleted_counts["order_items"] = OrderItem.objects.all().delete()[0]
+                deleted_counts["order_activity_logs"] = OrderActivityLog.objects.all().delete()[0]
+                deleted_counts["orders"] = Order.objects.all().delete()[0]
 
-            # 4. Products
-            deleted_counts["products"] = Product.objects.all().delete()[0]
+                # 3. Customer documents & custom prices & customers
+                deleted_counts["customer_documents"] = CustomerDocument.objects.all().delete()[0]
+                deleted_counts["customer_product_prices"] = CustomerProductPrice.objects.all().delete()[0]
+                deleted_counts["whatsapp_messages"] = WhatsAppMessage.objects.all().delete()[0]
+                deleted_counts["whatsapp_conversations"] = WhatsAppConversation.objects.all().delete()[0]
+                deleted_counts["whatsapp_customers"] = WhatsAppCustomer.objects.all().delete()[0]
+                deleted_counts["whatsapp_accounts"] = WhatsAppAccount.objects.all().delete()[0]
+                deleted_counts["customers"] = Customer.objects.all().delete()[0]
 
-            # 5. Routes & Shifts & Drivers
-            deleted_counts["driver_expenses"] = DriverExpense.objects.all().delete()[0]
-            deleted_counts["driver_shifts"] = DriverShift.objects.all().delete()[0]
-            deleted_counts["drivers"] = Driver.objects.all().delete()[0]
-            deleted_counts["routes"] = Route.objects.all().delete()[0]
+                # 4. Products
+                deleted_counts["products"] = Product.objects.all().delete()[0]
 
-            # 6. Reports & Closings
-            deleted_counts["daily_closings"] = DailyClosing.objects.all().delete()[0]
+                # 5. Routes & Shifts & Drivers
+                deleted_counts["driver_expenses"] = DriverExpense.objects.all().delete()[0]
+                deleted_counts["driver_shifts"] = DriverShift.objects.all().delete()[0]
+                deleted_counts["drivers"] = Driver.objects.all().delete()[0]
+                deleted_counts["routes"] = Route.objects.all().delete()[0]
 
-            # 7. Staff & Payouts & Attendance
-            deleted_counts["staff_payouts"] = StaffPayout.objects.all().delete()[0]
-            deleted_counts["staff_attendances"] = StaffAttendance.objects.all().delete()[0]
-            deleted_counts["staff_members"] = StaffMember.objects.all().delete()[0]
+                # 6. Reports & Closings
+                deleted_counts["daily_closings"] = DailyClosing.objects.all().delete()[0]
 
-            # 8. Business Compliance Documents
-            deleted_counts["business_documents"] = BusinessDocument.objects.all().delete()[0]
+                # 7. Staff & Payouts & Attendance
+                deleted_counts["staff_payouts"] = StaffPayout.objects.all().delete()[0]
+                deleted_counts["staff_attendances"] = StaffAttendance.objects.all().delete()[0]
+                deleted_counts["staff_members"] = StaffMember.objects.all().delete()[0]
 
-            # 9. Clean non-admin/non-owner device sessions and users
-            DeviceSession.objects.exclude(user__role="OWNER").exclude(user__is_superuser=True).delete()
+                # 8. Business Compliance Documents
+                deleted_counts["business_documents"] = BusinessDocument.objects.all().delete()[0]
 
-            non_admin_users = User.objects.exclude(role="OWNER").exclude(is_superuser=True)
-            non_admin_count = non_admin_users.count()
-            non_admin_users.delete()
-            deleted_counts["non_admin_users"] = non_admin_count
+                # 9. Clean non-admin/non-owner device sessions and users
+                DeviceSession.objects.exclude(user__role="OWNER").exclude(user__is_superuser=True).delete()
 
-            # Kept admin / owner accounts
-            admin_users = list(
-                User.objects.filter(
-                    models.Q(role="OWNER") | models.Q(is_superuser=True)
-                ).values_list("username", flat=True)
-            )
+                non_admin_users = User.objects.exclude(role="OWNER").exclude(is_superuser=True)
+                non_admin_count = non_admin_users.count()
+                non_admin_users.delete()
+                deleted_counts["non_admin_users"] = non_admin_count
 
-            # 10. Audit Logs & Admin Log entries
-            ActivityLog.objects.all().delete()
-            LogEntry.objects.all().delete()
+                # Kept admin / owner accounts
+                admin_users = list(
+                    User.objects.filter(
+                        models.Q(role="OWNER") | models.Q(is_superuser=True)
+                    ).values_list("username", flat=True)
+                )
 
-            # Record clear-all event as the first entry in fresh ActivityLog
-            log_activity(
-                user=user,
-                action="DELETED",
-                entity_type="SYSTEM_SETTING",
-                entity_id="clear_all_data",
-                entity_name="Database Master Reset",
-                summary=f"Full data clear executed by Owner {user.username}. All business data was removed. Admin/Owner accounts ({', '.join(admin_users)}) were preserved.",
-                details={"deleted_counts": deleted_counts, "preserved_users": admin_users},
-            )
+                # 10. Audit Logs & Admin Log entries
+                ActivityLog.objects.all().delete()
+                LogEntry.objects.all().delete()
+
+                # Record clear-all event as the first entry in fresh ActivityLog
+                log_activity(
+                    user=user,
+                    action="DELETED",
+                    entity_type="SYSTEM_SETTING",
+                    entity_id="clear_all_data",
+                    entity_name="Database Master Reset",
+                    summary=f"Full data clear executed by Owner {user.username}. All business data was removed. Admin/Owner accounts ({', '.join(admin_users)}) were preserved.",
+                    details={"deleted_counts": deleted_counts, "preserved_users": admin_users},
+                )
+        except Exception as clear_err:
+            return Response({"error": f"Failed to clear system data: {str(clear_err)}"}, status=500)
 
         total_deleted = sum(deleted_counts.values())
         from django.db import connection
