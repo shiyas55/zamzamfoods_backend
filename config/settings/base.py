@@ -116,13 +116,13 @@ CLOUDINARY_STORAGE = {
 }
 
 # Only enable Cloudinary if a genuine secret is supplied (not identical to the numeric API Key)
-_is_valid_cloudinary = bool(
+IS_VALID_CLOUDINARY = bool(
     CLOUDINARY_URL or (
         CLOUDINARY_API_SECRET and CLOUDINARY_API_SECRET != CLOUDINARY_API_KEY
     )
 )
 
-if _is_valid_cloudinary:
+if IS_VALID_CLOUDINARY:
     DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

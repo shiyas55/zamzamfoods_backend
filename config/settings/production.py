@@ -49,7 +49,7 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # Media files: Use Cloudinary Cloud Storage when configured with valid secret
-if _is_valid_cloudinary:
+if IS_VALID_CLOUDINARY:
     DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 else:
     MEDIA_URL = "/media/"
