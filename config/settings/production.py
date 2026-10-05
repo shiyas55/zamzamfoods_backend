@@ -16,8 +16,15 @@ ALLOWED_HOSTS = [
     for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
     if host.strip()
 ]
-if not ALLOWED_HOSTS:
-    raise ValueError("DJANGO_ALLOWED_HOSTS must be set in production.")
+_default_hosts = [
+    "zamzamfood.up.railway.app",
+    "zamzamfoods.up.railway.app",
+    "localhost",
+    "127.0.0.1",
+]
+for h in _default_hosts:
+    if h not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(h)
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 # Supabase PostgreSQL via DATABASE_URL
