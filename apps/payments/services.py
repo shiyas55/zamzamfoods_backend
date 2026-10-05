@@ -5,11 +5,20 @@ from apps.customers.models import Customer
 from apps.orders.models import Order
 from .models import Payment
 
-def generate_payment_number():
-    """Generates unique sequential payment receipt number for today."""
-    today_str = timezone.now().strftime("%Y%m%d")
-    count = Payment.objects.filter(payment_number__startswith=f"PAY-{today_str}").count() + 1
-    return f"PAY-{today_str}-{count:04d}"
+def generate_payment_number(payment_date=None):
+    """Generates unique sequential payment receipt number for today or given date."""
+    if payment_date is None:
+        payment_date = timezone.localdate()
+    elif isinstance(payment_date, str):
+        import datetime
+        payment_date = datetime.date.fromisoformat(payment_date)
+    date_str = payment_date.strftime("%Y%m%d")
+    count = Payment.objects.filter(payment_number__startswith=f"PAY-{date_str}").count() + 1
+    pay_num = f"PAY-{date_str}-{count:04d}"
+    while Payment.objects.filter(payment_number=pay_num).exists():
+        count += 1
+        pay_num = f"PAY-{date_str}-{count:04d}"
+    return pay_num
 
 
 def record_payment_service(customer_id, amount, payment_method, collected_by, order_id=None, reference_number="", notes="", received_at=None, staff_member=None, staff_member_id=None):
@@ -38,7 +47,8 @@ def record_payment_service(customer_id, amount, payment_method, collected_by, or
         if order_id:
             order = Order.objects.get(id=order_id)
 
-        payment_number = generate_payment_number()
+        pay_date = received_at.date() if hasattr(received_at, "date") else None
+        payment_number = generate_payment_number(payment_date=pay_date)
 
         payment = Payment.objects.create(
             payment_number=payment_number,

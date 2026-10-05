@@ -7,14 +7,18 @@ from apps.products.models import Product
 from apps.routes.models import Driver
 from .models import Order, OrderItem, OrderActivityLog
 
-def generate_order_number():
-    """Generates unique sequential order number for today."""
-    today_str = timezone.localdate().strftime("%Y%m%d")
-    count = Order.objects.filter(order_number__startswith=f"ORD-{today_str}").count() + 1
-    order_num = f"ORD-{today_str}-{count:04d}"
+def generate_order_number(order_date=None):
+    """Generates unique sequential order number for given order_date (defaults to today)."""
+    if order_date is None:
+        order_date = timezone.localdate()
+    elif isinstance(order_date, str):
+        order_date = datetime.date.fromisoformat(order_date)
+    date_str = order_date.strftime("%Y%m%d")
+    count = Order.objects.filter(order_number__startswith=f"ORD-{date_str}").count() + 1
+    order_num = f"ORD-{date_str}-{count:04d}"
     while Order.objects.filter(order_number=order_num).exists():
         count += 1
-        order_num = f"ORD-{today_str}-{count:04d}"
+        order_num = f"ORD-{date_str}-{count:04d}"
     return order_num
 
 
@@ -30,6 +34,8 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=_UN
 
     if order_date is None:
         order_date = timezone.localdate()
+    elif isinstance(order_date, str):
+        order_date = datetime.date.fromisoformat(order_date)
 
     with transaction.atomic():
         customer = Customer.objects.select_for_update().get(id=customer_id)
@@ -42,11 +48,11 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=_UN
             driver = route.drivers.filter(is_active=True).first()
 
         if not order_number or not str(order_number).strip():
-            order_number = generate_order_number()
+            order_number = generate_order_number(order_date=order_date)
         else:
             order_number = str(order_number).strip()
             if Order.objects.filter(order_number=order_number).exists():
-                order_number = f"{order_number}-{generate_order_number().split('-')[-1]}"
+                order_number = f"{order_number}-{generate_order_number(order_date=order_date).split('-')[-1]}"
 
         # Determine initial status based on source
         initial_status = Order.Status.LOCKED if source in ["MANAGER", "OWNER"] else Order.Status.SUBMITTED
