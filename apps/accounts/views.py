@@ -13,8 +13,10 @@ import hashlib
 import logging
 import os
 from typing import Optional
+from decimal import Decimal
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from django.middleware.csrf import get_token
 
@@ -558,7 +560,7 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
     def daily_sheet(self, request):
         """
         Returns all active staff members with their attendance status on a specific date.
-        Helps render a complete roll-call sheet.
+        Helps render a complete roll-call sheet including cash and gpay payouts.
         """
         date_str = request.query_params.get("date") or str(timezone.localdate())
         try:
@@ -571,6 +573,15 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
             str(att.staff_id): att
             for att in StaffAttendance.objects.filter(date=target_date)
         }
+        payouts = StaffPayout.objects.filter(date=target_date)
+        cash_payouts = {}
+        gpay_payouts = {}
+        for p in payouts:
+            sid = str(p.staff_id)
+            if p.payment_method == StaffPayout.PaymentMethod.CASH:
+                cash_payouts[sid] = cash_payouts.get(sid, Decimal("0.00")) + p.amount
+            elif p.payment_method == StaffPayout.PaymentMethod.GPAY_UPI:
+                gpay_payouts[sid] = gpay_payouts.get(sid, Decimal("0.00")) + p.amount
 
         results = []
         for staff in staff_list:
@@ -592,6 +603,8 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
                 "status": att.status if att else "FULL", # default to FULL for convenience
                 "is_marked": att is not None,
                 "calculated_wage": str(att.daily_wage) if att else str(base_wage),
+                "cash_paid": str(cash_payouts.get(str(staff.id), Decimal("0.00"))),
+                "gpay_paid": str(gpay_payouts.get(str(staff.id), Decimal("0.00"))),
                 "notes": att.notes if att else "",
             })
 
@@ -605,8 +618,19 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="bulk-save")
     def bulk_save(self, request):
         """
-        Saves or updates attendance for multiple staff members in one request.
-        Body: { date: "YYYY-MM-DD", attendances: [ { staff_id: "...", status: "FULL|HALF|LEAVE", notes: "..." } ] }
+        Saves or updates attendance and daily wage payouts (Cash & GPay) for multiple staff members in one request.
+        Body: {
+            date: "YYYY-MM-DD",
+            attendances: [
+                {
+                    staff_id: "...",
+                    status: "FULL|HALF|LEAVE",
+                    notes: "...",
+                    cash_paid: "500.00",
+                    gpay_paid: "0.00"
+                }
+            ]
+        }
         """
         date_str = request.data.get("date")
         if not date_str:
@@ -619,32 +643,101 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
 
         records = request.data.get("attendances", [])
         saved = []
-        for item in records:
-            staff_id = item.get("staff_id")
-            att_status = item.get("status", "FULL")
-            notes = item.get("notes", "")
-            if not staff_id:
-                continue
+        with transaction.atomic():
+            for item in records:
+                staff_id = item.get("staff_id")
+                att_status = item.get("status", "FULL")
+                notes = item.get("notes", "")
+                if not staff_id:
+                    continue
 
-            staff = StaffMember.objects.filter(id=staff_id).first()
-            if not staff:
-                continue
+                staff = StaffMember.objects.filter(id=staff_id).first()
+                if not staff:
+                    continue
 
-            att, created = StaffAttendance.objects.get_or_create(
-                staff=staff,
-                date=target_date,
-                defaults={"status": att_status, "notes": notes, "marked_by": request.user}
-            )
-            if not created:
-                att.status = att_status
-                att.notes = notes
-                att.marked_by = request.user
-                att.save()
+                att, created = StaffAttendance.objects.get_or_create(
+                    staff=staff,
+                    date=target_date,
+                    defaults={"status": att_status, "notes": notes, "marked_by": request.user}
+                )
+                if not created:
+                    att.status = att_status
+                    att.notes = notes
+                    att.marked_by = request.user
+                    att.save()
 
-            saved.append(att)
+                saved.append(att)
+
+                # Handle daily Cash payout if provided
+                if "cash_paid" in item:
+                    try:
+                        raw_c = str(item["cash_paid"]).strip()
+                        cash_val = Decimal(raw_c) if raw_c else Decimal("0.00")
+                    except Exception:
+                        cash_val = Decimal("0.00")
+
+                    existing_cash = StaffPayout.objects.filter(
+                        staff=staff,
+                        date=target_date,
+                        payment_method=StaffPayout.PaymentMethod.CASH,
+                        payout_type=StaffPayout.PayoutType.SALARY,
+                    ).first()
+
+                    if cash_val > Decimal("0.00"):
+                        if existing_cash:
+                            existing_cash.amount = cash_val
+                            existing_cash.notes = f"Daily wage cash on {target_date}"
+                            existing_cash.paid_by = request.user
+                            existing_cash.save()
+                        else:
+                            StaffPayout.objects.create(
+                                staff=staff,
+                                date=target_date,
+                                amount=cash_val,
+                                payment_method=StaffPayout.PaymentMethod.CASH,
+                                payout_type=StaffPayout.PayoutType.SALARY,
+                                notes=f"Daily wage cash on {target_date}",
+                                paid_by=request.user,
+                            )
+                    elif existing_cash:
+                        existing_cash.delete()
+
+                # Handle daily GPay payout if provided
+                if "gpay_paid" in item:
+                    try:
+                        raw_g = str(item["gpay_paid"]).strip()
+                        gpay_val = Decimal(raw_g) if raw_g else Decimal("0.00")
+                    except Exception:
+                        gpay_val = Decimal("0.00")
+
+                    existing_gpay = StaffPayout.objects.filter(
+                        staff=staff,
+                        date=target_date,
+                        payment_method=StaffPayout.PaymentMethod.GPAY_UPI,
+                        payout_type=StaffPayout.PayoutType.SALARY,
+                    ).first()
+
+                    if gpay_val > Decimal("0.00"):
+                        if existing_gpay:
+                            existing_gpay.amount = gpay_val
+                            existing_gpay.notes = f"Daily wage GPay on {target_date}"
+                            existing_gpay.paid_by = request.user
+                            existing_gpay.save()
+                        else:
+                            StaffPayout.objects.create(
+                                staff=staff,
+                                date=target_date,
+                                amount=gpay_val,
+                                payment_method=StaffPayout.PaymentMethod.GPAY_UPI,
+                                payout_type=StaffPayout.PayoutType.SALARY,
+                                notes=f"Daily wage GPay on {target_date}",
+                                paid_by=request.user,
+                            )
+                    elif existing_gpay:
+                        existing_gpay.delete()
 
         return Response({
-            "message": f"Successfully updated attendance for {len(saved)} staff members on {target_date}.",
+            "message": f"Successfully updated attendance and daily wage payouts for {len(saved)} staff members on {target_date}.",
             "count": len(saved),
         })
 
