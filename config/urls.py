@@ -18,8 +18,12 @@ admin.site.site_header = "Zamzam Foods Administration"
 admin.site.site_title = "Zamzam Foods Portal"
 admin.site.index_title = "Operations & Financial Management"
 
+from django.conf import settings
+from django.conf.urls.static import static
+
 api_v1_patterns = [
     path("auth/", include("apps.accounts.urls")),
+    path("", include("apps.accounts.urls")),
     path("", include("apps.routes.urls")),
     path("", include("apps.customers.urls")),
     path("", include("apps.products.urls")),
@@ -33,8 +37,8 @@ api_v1_patterns = [
 
     # API Documentation
     path("schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
-    path("redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
+    path("docs/", SpectacularSwaggerView.as_view(url_name="api_v1:schema"), name="swagger-ui"),
+    path("redoc/", SpectacularRedocView.as_view(url_name="api_v1:schema"), name="redoc"),
 ]
 
 urlpatterns = [
@@ -45,3 +49,7 @@ urlpatterns = [
     path("api/whatsapp/", include("apps.whatsapp.urls")),
     path("api/v1/", include((api_v1_patterns, "api_v1"))),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+

@@ -1,3 +1,5 @@
+from decimal import Decimal
+from django.db import transaction
 from rest_framework import viewsets, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -34,7 +36,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Order.objects.none()
 
-        queryset = Order.objects.select_related("customer", "route", "driver", "driver__user").prefetch_related("items__product")
+        queryset = Order.objects.select_related("customer", "route", "driver", "driver__user").prefetch_related("items__product", "credit_ledger_entries", "payments")
 
         # Query filters for managers/owners
         route_id = self.request.query_params.get("route")
@@ -85,6 +87,29 @@ class OrderViewSet(viewsets.ModelViewSet):
             if instance.status in [Order.Status.LOCKED, Order.Status.BILLING, Order.Status.DELIVERY_CREATED, Order.Status.COMPLETED, Order.Status.DELIVERED]:
                 raise PermissionDenied(f"Cannot delete order because its status is {instance.get_status_display()}.")
         return super().destroy(request, *args, **kwargs)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            from apps.credits.models import CreditTransaction
+            from apps.customers.models import Customer
+            sale_tx = CreditTransaction.objects.filter(
+                reference_order=instance,
+                transaction_type=CreditTransaction.TransactionType.CREDIT_SALE
+            ).first()
+            if sale_tx and instance.total_amount > Decimal("0.00"):
+                customer = Customer.objects.select_for_update().get(id=instance.customer_id)
+                new_bal = (customer.current_balance - instance.total_amount).quantize(Decimal("0.01"))
+                customer.current_balance = new_bal
+                customer.save(update_fields=["current_balance", "updated_at"])
+                CreditTransaction.objects.create(
+                    customer=customer,
+                    transaction_type=CreditTransaction.TransactionType.ADJUSTMENT,
+                    amount=-instance.total_amount,
+                    balance_after=new_bal,
+                    notes=f"Order #{instance.order_number} was deleted",
+                    recorded_by=self.request.user if (self.request and self.request.user and self.request.user.is_authenticated) else None,
+                )
+            instance.delete()
         
     @action(detail=True, methods=["post"], permission_classes=[IsManagerOrOwner])
     def reopen(self, request, pk=None):

@@ -37,26 +37,49 @@ def record_opening_balance_service(customer, opening_balance, recorded_by=None):
 
 def record_credit_sale_service(order, recorded_by=None):
     """
-    Records credit sale upon successful delivery.
+    Records credit sale for an order.
     Increases customer's current balance (receivable).
+    Idempotent: If a CREDIT_SALE ledger entry already exists for this order, returns it without double counting.
     """
     with transaction.atomic():
-        customer = Customer.objects.select_for_update().get(id=order.customer_id)
-        amount = Decimal(str(order.total_amount)).quantize(Decimal("0.01"))
+        existing = CreditTransaction.objects.filter(
+            reference_order=order,
+            transaction_type=CreditTransaction.TransactionType.CREDIT_SALE
+        ).first()
+        if existing:
+            return existing
 
+        amount = Decimal(str(order.total_amount)).quantize(Decimal("0.01"))
+        if amount <= Decimal("0.00"):
+            return None
+
+        customer = Customer.objects.select_for_update().get(id=order.customer_id)
         new_balance = (customer.current_balance + amount).quantize(Decimal("0.01"))
         customer.current_balance = new_balance
         customer.save(update_fields=["current_balance", "updated_at"])
 
-        return CreditTransaction.objects.create(
+        tx = CreditTransaction.objects.create(
             customer=customer,
             transaction_type=CreditTransaction.TransactionType.CREDIT_SALE,
             amount=amount,
             balance_after=new_balance,
             reference_order=order,
-            notes=f"Credit sale for delivered order #{order.order_number}",
+            notes=f"Credit sale for order #{order.order_number}",
             recorded_by=recorded_by,
         )
+
+        from apps.common.audit import log_activity
+        log_activity(
+            user=recorded_by,
+            action="CREATED",
+            entity_type="CREDIT",
+            entity_id=tx.id,
+            entity_name=f"Credit Sale for Order #{order.order_number}",
+            summary=f"Recorded credit sale ₹{amount} for {customer.name}. New Balance: ₹{new_balance}",
+            details={"customer": customer.name, "amount": str(amount), "order_number": order.order_number},
+        )
+
+        return tx
 
 
 def record_adjustment_service(customer_id, amount, notes, recorded_by=None):

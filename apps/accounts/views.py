@@ -26,11 +26,14 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
 from apps.common.permissions import IsOwner, IsManagerOrOwner
-from .models import User, DeviceSession
+from .models import User, DeviceSession, StaffMember, StaffAttendance, StaffPayout
 from .serializers import (
     UserSerializer,
     CustomTokenObtainPairSerializer,
     CreateUserSerializer,
+    StaffMemberSerializer,
+    StaffAttendanceSerializer,
+    StaffPayoutSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,6 +143,15 @@ class CookieLoginView(APIView):
             )
 
         user = serializer.user
+        if user.role == "DRIVER":
+            from apps.common.models import SystemSettings
+            sys_settings = SystemSettings.get_settings()
+            if not sys_settings.is_driver_module_enabled:
+                return Response(
+                    {"detail": "Delivery Driver portal is currently disabled in System Settings. Please contact the business owner."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         validated = serializer.validated_data  # contains access + refresh strings
 
         access_str: str = validated["access"]
@@ -407,3 +419,263 @@ class UserViewSet(viewsets.ModelViewSet):
         user.set_password(new_password)
         user.save()
         return Response({"message": "Password reset successfully."}, status=status.HTTP_200_OK)
+
+
+# ─── Staff Management (Owner and Manager) ────────────────────────────────────
+
+class StaffMemberViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for Staff Members (both workers with login accounts and workers without accounts).
+    Tracks joined_date tenure slabs (₹400, ₹500, ₹600) or custom daily wages, and proof documents.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrOwner]
+    serializer_class = StaffMemberSerializer
+
+    def get_queryset(self):
+        qs = StaffMember.objects.select_related("user").prefetch_related("attendances", "payouts").all()
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() == "true")
+
+        has_login = self.request.query_params.get("has_login")
+        if has_login is not None:
+            if has_login.lower() == "true":
+                qs = qs.filter(user__isnull=False)
+            elif has_login.lower() == "false":
+                qs = qs.filter(user__isnull=True)
+
+        role_type = self.request.query_params.get("role_type")
+        if role_type:
+            qs = qs.filter(role_type=role_type.upper())
+
+        search = self.request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                models.Q(full_name__icontains=search)
+                | models.Q(phone_number__icontains=search)
+                | models.Q(designation__icontains=search)
+                | models.Q(user__username__icontains=search)
+            )
+        return qs.order_by("full_name")
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=["get"])
+    def ledger(self, request, pk=None):
+        """Returns attendance breakdown, payouts, and running balance for a staff member."""
+        from django.db.models import Sum
+        from decimal import Decimal
+
+        staff = self.get_object()
+        attendances = staff.attendances.order_by("-date")[:60]
+        payouts = staff.payouts.order_by("-date")[:60]
+
+        total_earned = staff.attendances.aggregate(total=Sum("daily_wage"))["total"] or Decimal("0.00")
+        total_paid = staff.payouts.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        balance_due = total_earned - total_paid
+
+        return Response({
+            "staff": StaffMemberSerializer(staff, context={"request": request}).data,
+            "total_earned": str(total_earned),
+            "total_paid": str(total_paid),
+            "balance_due": str(balance_due),
+            "recent_attendances": StaffAttendanceSerializer(attendances, many=True).data,
+            "recent_payouts": StaffPayoutSerializer(payouts, many=True).data,
+        })
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Overview metrics for staff management."""
+        from django.db.models import Sum
+        from decimal import Decimal
+
+        today = timezone.localdate()
+        month_start = today.replace(day=1)
+
+        total_staff = StaffMember.objects.count()
+        active_staff = StaffMember.objects.filter(is_active=True).count()
+        login_staff = StaffMember.objects.filter(user__isnull=False).count()
+        worker_staff = StaffMember.objects.filter(user__isnull=True).count()
+
+        today_present = StaffAttendance.objects.filter(
+            date=today, status__in=["FULL", "HALF"]
+        ).count()
+
+        month_wages = StaffAttendance.objects.filter(
+            date__gte=month_start, date__lte=today
+        ).aggregate(total=Sum("daily_wage"))["total"] or Decimal("0.00")
+
+        month_payouts = StaffPayout.objects.filter(
+            date__gte=month_start, date__lte=today
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+        return Response({
+            "total_staff": total_staff,
+            "active_staff": active_staff,
+            "login_staff": login_staff,
+            "worker_staff": worker_staff,
+            "today_present": today_present,
+            "month_wages_earned": str(month_wages),
+            "month_payouts_given": str(month_payouts),
+        })
+
+
+class StaffAttendanceViewSet(viewsets.ModelViewSet):
+    """
+    Staff Attendance Roll-Call and Tracking.
+    Allows marking Full Day (100%), Half Day (50%), or Leave (₹0).
+    """
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrOwner]
+    serializer_class = StaffAttendanceSerializer
+
+    def get_queryset(self):
+        qs = StaffAttendance.objects.select_related("staff", "marked_by").all()
+        date_param = self.request.query_params.get("date")
+        if date_param:
+            qs = qs.filter(date=date_param)
+
+        staff_id = self.request.query_params.get("staff")
+        if staff_id:
+            qs = qs.filter(staff_id=staff_id)
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
+
+        month_param = self.request.query_params.get("month") # format YYYY-MM
+        if month_param:
+            parts = month_param.split("-")
+            if len(parts) == 2:
+                qs = qs.filter(date__year=int(parts[0]), date__month=int(parts[1]))
+
+        return qs.order_by("-date", "staff__full_name")
+
+    def perform_create(self, serializer):
+        serializer.save(marked_by=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="daily-sheet")
+    def daily_sheet(self, request):
+        """
+        Returns all active staff members with their attendance status on a specific date.
+        Helps render a complete roll-call sheet.
+        """
+        date_str = request.query_params.get("date") or str(timezone.localdate())
+        try:
+            target_date = timezone.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = timezone.localdate()
+
+        staff_list = StaffMember.objects.filter(is_active=True).order_by("full_name")
+        attendances = {
+            str(att.staff_id): att
+            for att in StaffAttendance.objects.filter(date=target_date)
+        }
+
+        results = []
+        for staff in staff_list:
+            att = attendances.get(str(staff.id))
+            base_wage = staff.get_daily_wage_for_date(target_date)
+            results.append({
+                "staff_id": str(staff.id),
+                "full_name": staff.full_name,
+                "phone_number": staff.phone_number,
+                "role_type": staff.role_type,
+                "designation": staff.designation,
+                "has_login_account": staff.has_login_account,
+                "joined_date": str(staff.joined_date) if staff.joined_date else None,
+                "wage_type": staff.wage_type,
+                "custom_daily_wage": str(staff.custom_daily_wage) if staff.custom_daily_wage else None,
+                "tenure_slab_label": staff.tenure_slab_label,
+                "base_daily_wage": str(base_wage),
+                "attendance_id": str(att.id) if att else None,
+                "status": att.status if att else "FULL", # default to FULL for convenience
+                "is_marked": att is not None,
+                "calculated_wage": str(att.daily_wage) if att else str(base_wage),
+                "notes": att.notes if att else "",
+            })
+
+        return Response({
+            "date": str(target_date),
+            "sheet": results,
+            "marked_count": len(attendances),
+            "total_staff": len(staff_list),
+        })
+
+    @action(detail=False, methods=["post"], url_path="bulk-save")
+    def bulk_save(self, request):
+        """
+        Saves or updates attendance for multiple staff members in one request.
+        Body: { date: "YYYY-MM-DD", attendances: [ { staff_id: "...", status: "FULL|HALF|LEAVE", notes: "..." } ] }
+        """
+        date_str = request.data.get("date")
+        if not date_str:
+            return Response({"error": "date is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            target_date = timezone.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        records = request.data.get("attendances", [])
+        saved = []
+        for item in records:
+            staff_id = item.get("staff_id")
+            att_status = item.get("status", "FULL")
+            notes = item.get("notes", "")
+            if not staff_id:
+                continue
+
+            staff = StaffMember.objects.filter(id=staff_id).first()
+            if not staff:
+                continue
+
+            att, created = StaffAttendance.objects.get_or_create(
+                staff=staff,
+                date=target_date,
+                defaults={"status": att_status, "notes": notes, "marked_by": request.user}
+            )
+            if not created:
+                att.status = att_status
+                att.notes = notes
+                att.marked_by = request.user
+                att.save()
+
+            saved.append(att)
+
+        return Response({
+            "message": f"Successfully updated attendance for {len(saved)} staff members on {target_date}.",
+            "count": len(saved),
+        })
+
+
+class StaffPayoutViewSet(viewsets.ModelViewSet):
+    """
+    Staff Wage Payouts and Cash Advances.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrOwner]
+    serializer_class = StaffPayoutSerializer
+
+    def get_queryset(self):
+        qs = StaffPayout.objects.select_related("staff", "paid_by").all()
+        staff_id = self.request.query_params.get("staff")
+        if staff_id:
+            qs = qs.filter(staff_id=staff_id)
+
+        date_param = self.request.query_params.get("date")
+        if date_param:
+            qs = qs.filter(date=date_param)
+
+        payout_type = self.request.query_params.get("payout_type")
+        if payout_type:
+            qs = qs.filter(payout_type=payout_type)
+
+        payment_method = self.request.query_params.get("payment_method")
+        if payment_method:
+            qs = qs.filter(payment_method=payment_method)
+
+        return qs.order_by("-date", "-created_at")
+
+    def perform_create(self, serializer):
+        serializer.save(paid_by=self.request.user)
+
