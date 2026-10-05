@@ -1108,26 +1108,44 @@ class DailyOpenView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        closing_obj, _ = DailyClosing.objects.update_or_create(
-            date=target_date,
-            defaults={
-                "is_opened": True,
-                "opened_by": request.user,
-                "opened_at": timezone.now(),
-                "opening_cash": opening_cash,
-                "opening_notes": notes,
-                "is_closed": False,
-            }
-        )
+        closing_obj = DailyClosing.objects.filter(date=target_date).first()
+        is_already_opened = closing_obj and closing_obj.is_opened
+
+        if closing_obj:
+            closing_obj.opening_cash = opening_cash
+            if notes:
+                closing_obj.opening_notes = notes
+            if not closing_obj.is_opened:
+                closing_obj.is_opened = True
+                closing_obj.opened_by = request.user
+                closing_obj.opened_at = timezone.now()
+            closing_obj.is_closed = False
+            closing_obj.save()
+        else:
+            closing_obj = DailyClosing.objects.create(
+                date=target_date,
+                is_opened=True,
+                opened_by=request.user,
+                opened_at=timezone.now(),
+                opening_cash=opening_cash,
+                opening_notes=notes,
+                is_closed=False,
+            )
 
         from apps.common.audit import log_activity
+        log_action = "UPDATED" if is_already_opened else "CREATED"
+        log_summary = (
+            f"Updated opening cash float for {target_date} to ₹{opening_cash}"
+            if is_already_opened
+            else f"Opened business day for {target_date} with opening cash float of ₹{opening_cash}"
+        )
         log_activity(
             user=request.user,
-            action="CREATED",
+            action=log_action,
             entity_type="REPORT",
             entity_id=closing_obj.id,
             entity_name=f"Day Opened: {target_date}",
-            summary=f"Opened business day for {target_date} with opening cash float of ₹{opening_cash}",
+            summary=log_summary,
             details={"date": str(target_date), "opening_cash": str(opening_cash), "notes": notes},
         )
 

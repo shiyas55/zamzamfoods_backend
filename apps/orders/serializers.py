@@ -164,8 +164,15 @@ class CreateOrderSerializer(serializers.Serializer):
     entered_by_role = serializers.CharField(required=False, allow_blank=True, default="")
     entered_by_name = serializers.CharField(required=False, allow_blank=True, default="")
     entered_by_type = serializers.CharField(required=False, allow_blank=True, default="MANAGER")
-    order_number = serializers.CharField(required=False, allow_blank=True, default="")
     items = OrderItemCreateInputSerializer(many=True)
+
+    def to_internal_value(self, data):
+        if hasattr(data, "copy"):
+            data = data.copy()
+            for key in ["driver_id", "route_id", "order_number"]:
+                if key in data and (data[key] == "" or data[key] is None):
+                    data[key] = None if key != "order_number" else ""
+        return super().to_internal_value(data)
 
     def validate_items(self, value):
         if not value:
@@ -192,14 +199,7 @@ class CreateOrderSerializer(serializers.Serializer):
         if closing and closing.is_closed:
             raise serializers.ValidationError({"detail": f"Business day {order_date} is closed. Data entry is not allowed."})
         if closing and not closing.is_opened:
-            request = self.context.get("request")
-            user = request.user if request else None
-            is_privileged = user and (getattr(user, "role", "") in ["MANAGER", "OWNER"] or user.is_staff or user.is_superuser)
-            if is_privileged or Order.objects.filter(order_date=order_date).exists():
-                closing.is_opened = True
-                closing.save(update_fields=["is_opened", "updated_at"])
-            else:
-                raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before entering orders."})
+            raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before entering orders."})
         return attrs
 
     def create(self, validated_data):
@@ -240,6 +240,14 @@ class UpdateOrderSerializer(serializers.Serializer):
     shop_expense_notes = serializers.CharField(required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
 
+    def to_internal_value(self, data):
+        if hasattr(data, "copy"):
+            data = data.copy()
+            for key in ["driver_id", "route_id"]:
+                if key in data and (data[key] == "" or data[key] is None):
+                    data[key] = None
+        return super().to_internal_value(data)
+
     def validate(self, attrs):
         instance = self.instance
         if instance:
@@ -254,8 +262,7 @@ class UpdateOrderSerializer(serializers.Serializer):
             if closing and closing.is_closed:
                 raise serializers.ValidationError({"detail": f"Business day {order_date} is closed. Data modification is not allowed."})
             if closing and not closing.is_opened:
-                closing.is_opened = True
-                closing.save(update_fields=["is_opened", "updated_at"])
+                raise serializers.ValidationError({"detail": f"Business day {order_date} has not been opened yet. You must open the day before modifying orders."})
         return attrs
 
     def update(self, instance, validated_data):
