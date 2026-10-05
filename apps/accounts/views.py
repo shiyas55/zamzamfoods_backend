@@ -585,13 +585,20 @@ class StaffAttendanceViewSet(viewsets.ModelViewSet):
 
         results = []
         for staff in staff_list:
+            is_driver = "driver" in (staff.designation or "").lower()
+            role_type = staff.role_type
+            if is_driver and staff.role_type != StaffMember.RoleType.STAFF:
+                StaffMember.objects.filter(id=staff.id).update(role_type=StaffMember.RoleType.STAFF)
+                staff.role_type = StaffMember.RoleType.STAFF
+                role_type = StaffMember.RoleType.STAFF
+
             att = attendances.get(str(staff.id))
             base_wage = staff.get_daily_wage_for_date(target_date)
             results.append({
                 "staff_id": str(staff.id),
                 "full_name": staff.full_name,
                 "phone_number": staff.phone_number,
-                "role_type": staff.role_type,
+                "role_type": role_type,
                 "designation": staff.designation,
                 "has_login_account": staff.has_login_account,
                 "joined_date": str(staff.joined_date) if staff.joined_date else None,

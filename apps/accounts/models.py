@@ -218,6 +218,21 @@ class StaffMember(TimeStampedUUIDModel):
 
     @property
     def tenure_slab_label(self) -> str:
+        if "driver" in (self.designation or "").lower() or self.role_type == self.RoleType.STAFF:
+            if self.wage_type == self.WageType.CUSTOM and self.custom_daily_wage is not None:
+                return f"Custom: ₹{self.custom_daily_wage}/day"
+            days = self.tenure_days
+            if days < 60:
+                return f"< 2 Months ({days}d) — ₹400/day"
+            elif days < 180:
+                return f"2 to 6 Months ({days}d) — ₹500/day"
+            elif days < 365:
+                return f"6 to 12 Months ({days}d) — ₹600/day"
+            elif days < 730:
+                return f"1 to 2 Years ({days}d) — ₹700/day"
+            else:
+                return f"2+ Years ({days}d) — ₹800/day"
+
         if self.role_type == self.RoleType.MEMBER:
             if self.custom_daily_wage is not None:
                 return f"Member Rate: ₹{self.custom_daily_wage}/day"
@@ -237,6 +252,8 @@ class StaffMember(TimeStampedUUIDModel):
             return f"2+ Years ({days}d) — ₹800/day"
 
     def save(self, *args, **kwargs):
+        if "driver" in (self.designation or "").lower() and self.role_type == self.RoleType.MEMBER:
+            self.role_type = self.RoleType.STAFF
         if self.role_type == self.RoleType.MEMBER:
             self.wage_type = self.WageType.CUSTOM
         super().save(*args, **kwargs)
