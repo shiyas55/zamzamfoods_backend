@@ -12,7 +12,7 @@ def generate_payment_number():
     return f"PAY-{today_str}-{count:04d}"
 
 
-def record_payment_service(customer_id, amount, payment_method, collected_by, order_id=None, reference_number="", notes="", received_at=None):
+def record_payment_service(customer_id, amount, payment_method, collected_by, order_id=None, reference_number="", notes="", received_at=None, staff_member=None, staff_member_id=None):
     """
     Atomic business transaction to record a customer payment.
     - Validates Decimal amount
@@ -26,6 +26,10 @@ def record_payment_service(customer_id, amount, payment_method, collected_by, or
 
     if received_at is None:
         received_at = timezone.now()
+
+    if staff_member_id and not staff_member:
+        from apps.accounts.models import StaffMember
+        staff_member = StaffMember.objects.filter(id=staff_member_id).first()
 
     with transaction.atomic():
         customer = Customer.objects.select_for_update().get(id=customer_id)
@@ -45,6 +49,7 @@ def record_payment_service(customer_id, amount, payment_method, collected_by, or
             status=Payment.Status.COMPLETED,
             reference_number=reference_number,
             collected_by=collected_by,
+            staff_member=staff_member,
             received_at=received_at,
             notes=notes,
         )

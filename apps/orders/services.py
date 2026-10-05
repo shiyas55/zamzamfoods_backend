@@ -18,7 +18,10 @@ def generate_order_number():
     return order_num
 
 
-def create_order_service(customer_id, items_data, order_date=None, driver_id=None, notes="", created_by=None, shop_expense=None, shop_expense_notes="", source="MANAGER", entered_by_role="", entered_by_name="", entered_by_type="MANAGER", order_number=None):
+_UNSET = object()
+
+
+def create_order_service(customer_id, items_data, order_date=None, driver_id=_UNSET, notes="", created_by=None, shop_expense=None, shop_expense_notes="", source="MANAGER", entered_by_role="", entered_by_name="", entered_by_type="MANAGER", order_number=None):
     """
     Atomic business transaction to create an order with line items.
     """
@@ -33,9 +36,9 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=Non
         route = customer.route
 
         driver = None
-        if driver_id:
+        if driver_id is not _UNSET and driver_id is not None:
             driver = Driver.objects.get(id=driver_id)
-        elif route:
+        elif driver_id is _UNSET and route:
             driver = route.drivers.filter(is_active=True).first()
 
         if not order_number or not str(order_number).strip():
@@ -69,11 +72,16 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=Non
         # Resolve unit prices for items
         for pid, item in aggregated_items.items():
             product = Product.objects.get(id=pid)
+            from apps.customers.services import get_effective_product_price
+            effective_price, has_custom, _ = get_effective_product_price(customer, product)
             if "unit_price" in item and item["unit_price"] is not None and str(item["unit_price"]).strip() != "":
-                u_price = Decimal(str(item["unit_price"]))
+                sent_price = Decimal(str(item["unit_price"]))
+                if has_custom and sent_price == product.unit_price:
+                    u_price = effective_price
+                else:
+                    u_price = sent_price
             else:
-                from apps.customers.services import get_effective_product_price
-                u_price, _, _ = get_effective_product_price(customer, product)
+                u_price = effective_price
             item["resolved_unit_price"] = u_price
             item["product_obj"] = product
 
@@ -159,8 +167,14 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=Non
         )
 
         # Synchronize delivery dispatch when assigned to a driver or route driver
-        from apps.deliveries.services import ensure_order_delivery
-        ensure_order_delivery(order, driver=driver, route=route)
+        if driver:
+            from apps.deliveries.services import ensure_order_delivery
+            ensure_order_delivery(order, driver=driver, route=route)
+
+        # Post credit sale to customer's ledger immediately if order total > 0 and not CANCELLED
+        if order.total_amount > Decimal("0.00") and order.status != Order.Status.CANCELLED:
+            from apps.credits.services import record_credit_sale_service
+            record_credit_sale_service(order=order, recorded_by=created_by)
 
     return order
 
@@ -240,11 +254,16 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
             for pid, item in aggregated_items.items():
                 product = Product.objects.get(id=pid)
                 quantity = item["quantity"]
+                from apps.customers.services import get_effective_product_price
+                effective_price, has_custom, _ = get_effective_product_price(order.customer, product)
                 if "unit_price" in item and item["unit_price"] is not None and str(item["unit_price"]).strip() != "":
-                    unit_price = Decimal(str(item["unit_price"]))
+                    sent_price = Decimal(str(item["unit_price"]))
+                    if has_custom and sent_price == product.unit_price:
+                        unit_price = effective_price
+                    else:
+                        unit_price = sent_price
                 else:
-                    from apps.customers.services import get_effective_product_price
-                    unit_price, _, _ = get_effective_product_price(order.customer, product)
+                    unit_price = effective_price
 
                 subtotal = (Decimal(quantity) * unit_price).quantize(Decimal("0.01"))
                 OrderItem.objects.create(
@@ -266,6 +285,32 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
         # Re-lock if edited by manager/owner
         order.status = Order.Status.LOCKED
         order.save()
+
+        # Dynamically synchronize customer credit balance with order change
+        delta = (order.total_amount - old_total).quantize(Decimal("0.01"))
+        if delta != Decimal("0.00") and order.status != Order.Status.CANCELLED:
+            from apps.credits.models import CreditTransaction
+            from apps.credits.services import record_credit_sale_service
+            sale_tx = CreditTransaction.objects.filter(
+                reference_order=order,
+                transaction_type=CreditTransaction.TransactionType.CREDIT_SALE
+            ).first()
+            if sale_tx:
+                customer = Customer.objects.select_for_update().get(id=order.customer_id)
+                new_balance = (customer.current_balance + delta).quantize(Decimal("0.01"))
+                customer.current_balance = new_balance
+                customer.save(update_fields=["current_balance", "updated_at"])
+                CreditTransaction.objects.create(
+                    customer=customer,
+                    transaction_type=CreditTransaction.TransactionType.ADJUSTMENT,
+                    amount=delta,
+                    balance_after=new_balance,
+                    reference_order=order,
+                    notes=f"Order #{order.order_number} modified from ₹{old_total} to ₹{order.total_amount}",
+                    recorded_by=user,
+                )
+            else:
+                record_credit_sale_service(order=order, recorded_by=user)
 
         # Audit log
         user_name = user.get_full_name() or user.username if user else "System"

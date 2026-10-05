@@ -20,10 +20,19 @@ class Product(TimeStampedUUIDModel):
         blank=True,
         help_text="Packaging specification (e.g. 10 pcs / pack)"
     )
+    order_number = models.PositiveIntegerField(
+        default=0,
+        db_index=True,
+        help_text="Display/sequence order number (e.g. 1 for Kubbus, 2 for Bun, 3 for Romali)"
+    )
+    skip_in_entry = models.BooleanField(
+        default=False,
+        help_text="Skip this product column during fast Enter key order entry"
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["order_number", "created_at", "name"]
         verbose_name = "Product"
         verbose_name_plural = "Products"
 

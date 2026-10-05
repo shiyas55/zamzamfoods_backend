@@ -46,35 +46,92 @@ class Driver(TimeStampedUUIDModel):
 
     class Meta:
         ordering = ["user__first_name", "user__username"]
-        verbose_name = "Driver Profile"
-        verbose_name_plural = "Driver Profiles"
+        verbose_name = "Staff Driver Profile"
+        verbose_name_plural = "Staff Driver Profiles"
 
     @property
     def driver_name(self):
         if self.user:
             return self.user.get_full_name() or self.user.username
-        return "Driver"
+        return "Staff Driver"
 
     def __str__(self):
         full = self.driver_name
         route_name = self.assigned_route.name if self.assigned_route else "Unassigned"
-        return f"{full} - Route: {route_name}"
+        return f"{full} (Staff Driver) - Route: {route_name}"
+
+    def sync_staff_profile(self):
+        """
+        Synchronizes this Driver with an accounts.StaffMember profile
+        so the driver seamlessly participates in Staff Attendance,
+        Daily Wage calculations, and Payout ledgers as 'Staff Driver'.
+        """
+        if not self.user:
+            return None
+        from apps.accounts.models import StaffMember
+        name = self.driver_name
+        phone = self.phone_number or self.user.phone_number or ""
+        joined = self.user.date_joined.date() if self.user.date_joined else timezone.localdate()
+
+        staff, created = StaffMember.objects.get_or_create(
+            user=self.user,
+            defaults={
+                "full_name": name,
+                "phone_number": phone,
+                "role_type": "STAFF",
+                "designation": "Staff Driver",
+                "joined_date": joined,
+                "is_active": self.is_active,
+                "wage_type": StaffMember.WageType.DEFAULT_SLAB,
+            }
+        )
+        if not created:
+            updated = False
+            if getattr(staff, "role_type", None) != "STAFF":
+                staff.role_type = "STAFF"
+                updated = True
+            if staff.full_name != name:
+                staff.full_name = name
+                updated = True
+            if phone and staff.phone_number != phone:
+                staff.phone_number = phone
+                updated = True
+            if staff.is_active != self.is_active:
+                staff.is_active = self.is_active
+                updated = True
+            if not staff.designation or staff.designation in ["Worker", "Bakery Worker"]:
+                staff.designation = "Staff Driver"
+                updated = True
+            if updated:
+                staff.save()
+        return staff
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        try:
+            self.sync_staff_profile()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Failed to auto-sync driver staff profile: %s", e)
 
 
 class DriverExpense(TimeStampedUUIDModel):
     """
-    Operating expenses logged by drivers on their routes (fuel, food, tolls, repairs).
+    Operating expenses logged by drivers, managers, or owners (shop expenses, maintenance, fuel, food, etc.).
     Audit trail with driver isolation and manager/owner oversight.
     """
     class Category(models.TextChoices):
+        SHOP_EXPENSE = "SHOP_EXPENSE", "Shop Expense"
+        MAINTENANCE = "MAINTENANCE", "Shop & Vehicle Maintenance"
+        RAW_MATERIAL = "RAW_MATERIAL", "Raw Materials / Packaging"
         PETROL_FUEL = "PETROL_FUEL", "Petrol / Fuel"
         PETROL = "PETROL", "Petrol"
-        FOOD = "FOOD", "Food"
+        FOOD = "FOOD", "Food / Meals"
         PARKING = "PARKING", "Parking"
         TOLL = "TOLL", "Toll"
-        MAINTENANCE = "MAINTENANCE", "Vehicle Maintenance"
+        UTILITY = "UTILITY", "Electricity / Rent / Utilities"
+        SALARY_WAGES = "SALARY_WAGES", "Daily Wages / Allowance"
         VEHICLE_REPAIR = "VEHICLE_REPAIR", "Vehicle Expense"
-        SHOP_EXPENSE = "SHOP_EXPENSE", "Shop Expense"
         OTHER = "OTHER", "Other"
 
     driver = models.ForeignKey(
@@ -88,7 +145,7 @@ class DriverExpense(TimeStampedUUIDModel):
     category = models.CharField(
         max_length=50,
         choices=Category.choices,
-        default=Category.PETROL_FUEL,
+        default=Category.SHOP_EXPENSE,
         db_index=True,
         help_text="Expense classification"
     )
@@ -119,8 +176,8 @@ class DriverExpense(TimeStampedUUIDModel):
 
     class Meta:
         ordering = ["-date", "-created_at"]
-        verbose_name = "Driver Expense"
-        verbose_name_plural = "Driver Expenses"
+        verbose_name = "Expense"
+        verbose_name_plural = "Expenses"
 
     def __str__(self):
         category_name = self.custom_category if self.category == self.Category.OTHER and self.custom_category else self.get_category_display()

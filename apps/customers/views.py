@@ -1,18 +1,20 @@
 from decimal import Decimal
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Prefetch, Q
+from django.utils import timezone
 from rest_framework import viewsets, permissions, filters, status, serializers as drf_serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
 from apps.common.permissions import IsManagerOrOwner
 from apps.products.models import Product
-from .models import Customer, CustomerProductPrice
+from .models import Customer, CustomerProductPrice, CustomerDocument
 from .serializers import (
     CustomerSerializer,
     CustomerProductPriceSerializer,
     SetCustomerPriceInputSerializer,
     CustomerPricingOverviewItemSerializer,
     CustomerDetailSummarySerializer,
+    CustomerDocumentSerializer,
 )
 from .services import get_effective_product_price, set_customer_product_price
 
@@ -37,7 +39,18 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Customer.objects.none()
 
-        queryset = Customer.objects.select_related("route").all()
+        today = timezone.localdate()
+        active_prices_pref = Prefetch(
+            "custom_prices",
+            queryset=CustomerProductPrice.objects.filter(
+                is_active=True,
+                effective_from__lte=today,
+            ).filter(
+                Q(effective_to__isnull=True) | Q(effective_to__gte=today)
+            ).order_by("effective_from", "created_at"),
+            to_attr="prefetched_custom_prices",
+        )
+        queryset = Customer.objects.select_related("route").prefetch_related(active_prices_pref).all()
 
         # Route filter query param (for managers/owners)
         route_id = self.request.query_params.get("route")
@@ -269,6 +282,40 @@ class CustomerViewSet(viewsets.ModelViewSet):
         }
         return Response(data)
 
+    @extend_schema(responses={200: drf_serializers.DictField()})
+    @action(detail=True, methods=["post"], url_path="set-balance", permission_classes=[IsManagerOrOwner])
+    def set_balance(self, request, pk=None):
+        """
+        Directly sets the customer's current balance / previous due from Fast Order Entry.
+        Creates an audit ledger adjustment record and updates current_balance in DB.
+        """
+        customer = self.get_object()
+        balance_raw = request.data.get("balance")
+        if balance_raw is None:
+            return Response({"detail": "balance field is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            new_balance = Decimal(str(balance_raw)).quantize(Decimal("0.01"))
+            if new_balance < 0:
+                return Response({"detail": "Balance cannot be negative."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"detail": "Invalid balance format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.credits.services import record_adjustment_service
+        delta = (new_balance - customer.current_balance).quantize(Decimal("0.01"))
+        if delta != Decimal("0.00"):
+            record_adjustment_service(
+                customer_id=customer.id,
+                amount=delta,
+                notes=request.data.get("notes") or f"Previous due set to ₹{new_balance} from Fast Wholesale Entry",
+                recorded_by=request.user,
+            )
+        customer.refresh_from_db()
+        return Response({
+            "id": str(customer.id),
+            "name": customer.name,
+            "current_balance": str(customer.current_balance),
+        }, status=status.HTTP_200_OK)
+
 
 class CustomerProductPriceViewSet(viewsets.ModelViewSet):
     """
@@ -298,7 +345,160 @@ class CustomerProductPriceViewSet(viewsets.ModelViewSet):
         return queryset.order_by("customer__name", "product__name")
 
     def perform_create(self, serializer):
+        customer = serializer.validated_data.get("customer")
+        product = serializer.validated_data.get("product")
+        if customer and product and serializer.validated_data.get("is_active", True):
+            CustomerProductPrice.objects.filter(
+                customer=customer,
+                product=product,
+                is_active=True
+            ).update(is_active=False, updated_by=self.request.user)
         serializer.save(created_by=self.request.user, updated_by=self.request.user)
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+
+class CustomerDocumentViewSet(viewsets.ModelViewSet):
+    """
+    CRUD and multi-file batch upload for shop documents (licenses, certificates, KYC, photos, etc.)
+    """
+    serializer_class = CustomerDocumentSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = [
+        "title",
+        "file_name",
+        "document_number",
+        "notes",
+        "customer__name",
+        "customer__route__name",
+    ]
+    ordering_fields = ["created_at", "expiry_date", "title", "file_size", "customer__name"]
+    ordering = ["-created_at"]
+
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy", "batch_upload"]:
+            return [IsManagerOrOwner()]
+        return [permissions.IsAuthenticated()]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return CustomerDocument.objects.none()
+
+        queryset = CustomerDocument.objects.select_related("customer", "customer__route", "uploaded_by").all()
+
+        # Driver data isolation: driver ONLY sees documents for shops on their assigned route
+        if user.role == "DRIVER":
+            from apps.routes.models import Driver
+            try:
+                driver_profile = user.driver_profile
+                if driver_profile.assigned_route:
+                    queryset = queryset.filter(customer__route=driver_profile.assigned_route)
+                else:
+                    return CustomerDocument.objects.none()
+            except Driver.DoesNotExist:
+                return CustomerDocument.objects.none()
+
+        # Customer filter
+        customer_id = self.request.query_params.get("customer")
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        # Route filter
+        route_id = self.request.query_params.get("route")
+        if route_id:
+            queryset = queryset.filter(customer__route_id=route_id)
+
+        # Document type filter
+        doc_type = self.request.query_params.get("document_type")
+        if doc_type:
+            queryset = queryset.filter(document_type=doc_type)
+
+        # Expired filter
+        is_expired = self.request.query_params.get("is_expired")
+        today = timezone.localdate()
+        if is_expired == "true":
+            queryset = queryset.filter(expiry_date__lt=today)
+        elif is_expired == "false":
+            queryset = queryset.filter(Q(expiry_date__isnull=True) | Q(expiry_date__gte=today))
+
+        return queryset
+
+    def perform_create(self, serializer):
+        uploaded_file = self.request.FILES.get("file")
+        file_name = uploaded_file.name if uploaded_file else ""
+        file_size = uploaded_file.size if uploaded_file else 0
+        mime_type = getattr(uploaded_file, "content_type", "") if uploaded_file else ""
+        title = serializer.validated_data.get("title") or file_name or "Shop Document"
+
+        serializer.save(
+            title=title,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            uploaded_by=self.request.user,
+        )
+
+    @action(detail=False, methods=["post"], url_path="batch-upload")
+    def batch_upload(self, request):
+        """
+        Upload multiple files at once for a customer shop.
+        Accepts multipart/form-data:
+        - customer: UUID
+        - document_type: string (optional, defaults to 'OTHER')
+        - title: optional title or prefix
+        - document_number: optional string
+        - expiry_date: optional date string (YYYY-MM-DD)
+        - notes: optional string
+        - files: list of uploaded files (one or more)
+        """
+        customer_id = request.data.get("customer")
+        if not customer_id:
+            return Response({"detail": "Customer ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            customer = Customer.objects.get(id=customer_id)
+        except Customer.DoesNotExist:
+            return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        uploaded_files = request.FILES.getlist("files")
+        if not uploaded_files:
+            single_file = request.FILES.get("file")
+            if single_file:
+                uploaded_files = [single_file]
+            else:
+                return Response({"detail": "No files provided for upload."}, status=status.HTTP_400_BAD_REQUEST)
+
+        doc_type = request.data.get("document_type") or CustomerDocument.DocumentType.OTHER
+        base_title = request.data.get("title", "").strip()
+        document_number = request.data.get("document_number", "").strip()
+        expiry_date = request.data.get("expiry_date") or None
+        notes = request.data.get("notes", "").strip()
+
+        created_docs = []
+        for idx, f in enumerate(uploaded_files):
+            file_title = base_title
+            if not file_title:
+                file_title = f.name
+            elif len(uploaded_files) > 1:
+                file_title = f"{base_title} ({idx + 1})"
+
+            doc = CustomerDocument.objects.create(
+                customer=customer,
+                title=file_title,
+                document_type=doc_type,
+                file=f,
+                file_name=f.name,
+                file_size=f.size,
+                mime_type=getattr(f, "content_type", ""),
+                document_number=document_number,
+                expiry_date=expiry_date,
+                notes=notes,
+                uploaded_by=request.user,
+            )
+            created_docs.append(doc)
+
+        serializer = self.get_serializer(created_docs, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+

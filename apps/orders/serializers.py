@@ -7,7 +7,7 @@ from .models import Order, OrderItem
 from apps.customers.serializers import CustomerSerializer
 from apps.products.serializers import ProductSerializer
 from apps.routes.serializers import RouteSerializer, DriverSerializer
-from .services import create_order_service, update_order_service
+from .services import create_order_service, update_order_service, _UNSET
 
 class OrderItemSerializer(serializers.ModelSerializer):
     product_details = ProductSerializer(source="product", read_only=True)
@@ -32,6 +32,9 @@ class OrderSerializer(serializers.ModelSerializer):
     driver_name = serializers.SerializerMethodField()
     delivery_status = serializers.SerializerMethodField()
     delivery_id = serializers.SerializerMethodField()
+    previous_balance = serializers.SerializerMethodField()
+    balance_after = serializers.SerializerMethodField()
+    paid_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -59,8 +62,24 @@ class OrderSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "submitted_at",
+            "previous_balance",
+            "balance_after",
+            "paid_amount",
         ]
-        read_only_fields = ["id", "order_number", "total_amount", "created_at", "updated_at", "submitted_at", "source", "entered_by_role", "entered_by_name"]
+        read_only_fields = [
+            "id",
+            "order_number",
+            "total_amount",
+            "created_at",
+            "updated_at",
+            "submitted_at",
+            "source",
+            "entered_by_role",
+            "entered_by_name",
+            "previous_balance",
+            "balance_after",
+            "paid_amount",
+        ]
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_driver_name(self, obj):
@@ -79,6 +98,53 @@ class OrderSerializer(serializers.ModelSerializer):
         if hasattr(obj, "delivery") and obj.delivery:
             return str(obj.delivery.id)
         return None
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_previous_balance(self, obj):
+        has_prefetched = hasattr(obj, "_prefetched_objects_cache") and "credit_ledger_entries" in obj._prefetched_objects_cache
+        if has_prefetched:
+            tx = next((t for t in obj.credit_ledger_entries.all() if t.transaction_type == "CREDIT_SALE"), None)
+        else:
+            tx = obj.credit_ledger_entries.filter(transaction_type="CREDIT_SALE").first()
+
+        if tx:
+            return str(tx.balance_before)
+
+        from apps.credits.models import CreditTransaction
+        prior_tx = CreditTransaction.objects.filter(
+            customer_id=obj.customer_id,
+            created_at__lt=obj.created_at
+        ).order_by("-created_at").first()
+        if prior_tx:
+            return str(prior_tx.balance_after)
+
+        return "0.00"
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_balance_after(self, obj):
+        has_prefetched = hasattr(obj, "_prefetched_objects_cache") and "credit_ledger_entries" in obj._prefetched_objects_cache
+        if has_prefetched:
+            tx = next((t for t in obj.credit_ledger_entries.all() if t.transaction_type == "CREDIT_SALE"), None)
+        else:
+            tx = obj.credit_ledger_entries.filter(transaction_type="CREDIT_SALE").first()
+
+        if tx:
+            return str(tx.balance_after)
+
+        prev_bal = Decimal(self.get_previous_balance(obj))
+        tot = Decimal(str(obj.total_amount or "0.00"))
+        return str((prev_bal + tot).quantize(Decimal("0.01")))
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_paid_amount(self, obj):
+        has_prefetched = hasattr(obj, "_prefetched_objects_cache") and "payments" in obj._prefetched_objects_cache
+        if has_prefetched:
+            payments = obj.payments.all()
+        else:
+            from apps.payments.models import Payment
+            payments = Payment.objects.filter(order=obj)
+        total_p = sum((Decimal(str(p.amount)) for p in payments), Decimal("0.00"))
+        return str(total_p.quantize(Decimal("0.01")))
 
 
 class OrderItemCreateInputSerializer(serializers.Serializer):
@@ -135,7 +201,7 @@ class CreateOrderSerializer(serializers.Serializer):
 
         items_data = validated_data["items"]
         customer_id = validated_data["customer_id"]
-        driver_id = validated_data.get("driver_id")
+        driver_id = validated_data.get("driver_id") if "driver_id" in validated_data else _UNSET
         order_date = validated_data.get("order_date")
         shop_expense = validated_data.get("shop_expense", Decimal("0.00"))
         shop_expense_notes = validated_data.get("shop_expense_notes", "")

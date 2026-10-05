@@ -247,11 +247,17 @@ class DriverExpenseViewSet(viewsets.ModelViewSet):
         # Filters for Managers and Owners
         driver_id = self.request.query_params.get("driver")
         if driver_id:
-            queryset = queryset.filter(driver_id=driver_id)
+            if driver_id.lower() in ["none", "shop", "shop_only", "null"]:
+                queryset = queryset.filter(driver__isnull=True)
+            else:
+                queryset = queryset.filter(driver_id=driver_id)
 
         route_id = self.request.query_params.get("route")
         if route_id:
-            queryset = queryset.filter(driver__assigned_route_id=route_id)
+            if route_id.lower() in ["none", "shop", "direct"]:
+                queryset = queryset.filter(driver__isnull=True)
+            else:
+                queryset = queryset.filter(driver__assigned_route_id=route_id)
 
         category = self.request.query_params.get("category")
         if category:
@@ -316,36 +322,44 @@ class DriverExpenseViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
     def summary(self, request):
         """
-        Calculates today's, this week's, and category breakdown of driver expenses.
+        Calculates today's, this week's, this month's, and category breakdown of expenses.
         """
         today = timezone.localdate()
         week_start = today - timezone.timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
 
         qs = self.get_queryset()
 
         today_qs = qs.filter(date=today)
         week_qs = qs.filter(date__gte=week_start, date__lte=today)
+        month_qs = qs.filter(date__gte=month_start, date__lte=today)
 
         today_total = today_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
         week_total = week_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        month_total = month_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
         all_total = qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
 
-        # Category breakdown for today
+        # Category breakdown for month and today
         categories = {}
+        category_breakdown = {}
         for cat_code, cat_label in DriverExpense.Category.choices:
-            cat_sum = today_qs.filter(category=cat_code).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+            cat_sum_today = today_qs.filter(category=cat_code).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+            cat_sum_month = month_qs.filter(category=cat_code).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
             categories[cat_code] = {
                 "label": cat_label,
-                "total": cat_sum,
+                "total": cat_sum_today,
             }
+            category_breakdown[cat_code] = str(cat_sum_month)
 
         return Response({
             "date": today,
-            "today_total": today_total,
-            "week_total": week_total,
-            "all_total": all_total,
+            "today_total": str(today_total),
+            "week_total": str(week_total),
+            "month_total": str(month_total),
+            "all_total": str(all_total),
+            "count": today_qs.count(),
             "today_categories": categories,
-            "today_count": today_qs.count(),
+            "category_breakdown": category_breakdown,
         })
 
 

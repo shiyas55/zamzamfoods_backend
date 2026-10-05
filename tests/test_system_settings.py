@@ -49,6 +49,8 @@ class SystemSettingsTestCase(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIn("is_whatsapp_enabled", res.data)
         self.assertIn("is_self_order_enabled", res.data)
+        self.assertIn("is_order_discount_enabled", res.data)
+        self.assertIn("is_driver_module_enabled", res.data)
         self.assertIn("business_name", res.data)
         self.assertIn("phone_number", res.data)
 
@@ -57,6 +59,7 @@ class SystemSettingsTestCase(TestCase):
         res_owner = self.client.get("/api/v1/settings/")
         self.assertEqual(res_owner.status_code, status.HTTP_200_OK)
         self.assertIn("id", res_owner.data)
+        self.assertIn("is_order_discount_enabled", res_owner.data)
 
     def test_admin_only_write_permission(self):
         # 1. Driver attempt to update settings MUST be forbidden (403)
@@ -82,6 +85,7 @@ class SystemSettingsTestCase(TestCase):
             "phone_number": "+91 98470 55555",
             "is_whatsapp_enabled": False,
             "is_self_order_enabled": False,
+            "is_order_discount_enabled": False,
             "invoice_footer_notes": "Official Zamzam Tax Invoice. Fresh Rotis."
         }
         res_owner = self.client.patch("/api/v1/settings/", payload, format="json")
@@ -90,12 +94,14 @@ class SystemSettingsTestCase(TestCase):
         self.assertEqual(res_owner.data["phone_number"], "+91 98470 55555")
         self.assertFalse(res_owner.data["is_whatsapp_enabled"])
         self.assertFalse(res_owner.data["is_self_order_enabled"])
+        self.assertFalse(res_owner.data["is_order_discount_enabled"])
 
         # Check DB updated
         settings_db = SystemSettings.get_settings()
         self.assertEqual(settings_db.gst_number, "32AABCU9603R1ZX")
         self.assertFalse(settings_db.is_whatsapp_enabled)
         self.assertFalse(settings_db.is_self_order_enabled)
+        self.assertFalse(settings_db.is_order_discount_enabled)
 
     def test_self_order_toggle_enforcement(self):
         # Disable self order
@@ -230,5 +236,88 @@ class SystemSettingsTestCase(TestCase):
         settings_db.whatsapp_plan_expires_at = timezone.now() - datetime.timedelta(days=1)
         settings_db.save()
         self.assertFalse(settings_db.is_whatsapp_active)
+
+    def test_driver_module_toggle_and_login_restriction(self):
+        """
+        Verify that owner can toggle the Driver portion ON and OFF,
+        and when turned OFF, driver logins are cleanly blocked.
+        """
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. Turn driver module OFF
+        turn_off_res = self.client.patch("/api/v1/settings/", {
+            "is_driver_module_enabled": False
+        }, format="json")
+        self.assertEqual(turn_off_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(turn_off_res.data["is_driver_module_enabled"])
+
+        # 2. Driver attempts login -> Blocked with 403 Forbidden
+        self.client.logout()
+        login_res = self.client.post("/api/v1/auth/login/", {
+            "username": "test_driver_user",
+            "password": "DriverPassword123!"
+        })
+        self.assertEqual(login_res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("disabled", login_res.data["detail"].lower())
+
+        # 3. Manager/Owner login still works normally
+        mgr_login = self.client.post("/api/v1/auth/login/", {
+            "username": "test_manager_user",
+            "password": "ManagerPassword123!"
+        })
+        self.assertEqual(mgr_login.status_code, status.HTTP_200_OK)
+
+        # 4. Turn driver module back ON
+        self.client.force_authenticate(user=self.owner)
+        turn_on_res = self.client.patch("/api/v1/settings/", {
+            "is_driver_module_enabled": True
+        }, format="json")
+        self.assertEqual(turn_on_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(turn_on_res.data["is_driver_module_enabled"])
+
+        # 5. Driver login now succeeds
+        self.client.logout()
+        driver_login_again = self.client.post("/api/v1/auth/login/", {
+            "username": "test_driver_user",
+            "password": "DriverPassword123!"
+        })
+        self.assertEqual(driver_login_again.status_code, status.HTTP_200_OK)
+
+    def test_settings_pin_verify_and_reset(self):
+        # 1. Default PIN is 7667
+        verify_default = self.client.post("/api/v1/settings/verify-pin/", {"pin": "7667"}, format="json")
+        self.assertEqual(verify_default.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify_default.data["valid"])
+
+        # 2. Wrong PIN returns 400
+        verify_wrong = self.client.post("/api/v1/settings/verify-pin/", {"pin": "1234"}, format="json")
+        self.assertEqual(verify_wrong.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(verify_wrong.data["valid"])
+
+        # 3. Reset PIN with wrong password fails
+        reset_fail = self.client.post("/api/v1/settings/reset-pin/", {
+            "username": "test_owner_admin",
+            "password": "WrongPassword!",
+            "new_pin": "9999"
+        }, format="json")
+        self.assertEqual(reset_fail.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # 4. Reset PIN with valid owner credentials succeeds
+        reset_ok = self.client.post("/api/v1/settings/reset-pin/", {
+            "username": "test_owner_admin",
+            "password": "OwnerPassword123!",
+            "new_pin": "9999"
+        }, format="json")
+        self.assertEqual(reset_ok.status_code, status.HTTP_200_OK)
+        self.assertTrue(reset_ok.data["success"])
+
+        # 5. Verify new PIN 9999 succeeds
+        verify_new = self.client.post("/api/v1/settings/verify-pin/", {"pin": "9999"}, format="json")
+        self.assertEqual(verify_new.status_code, status.HTTP_200_OK)
+        self.assertTrue(verify_new.data["valid"])
+
+        # 6. Old PIN 7667 now fails
+        verify_old = self.client.post("/api/v1/settings/verify-pin/", {"pin": "7667"}, format="json")
+        self.assertEqual(verify_old.status_code, status.HTTP_400_BAD_REQUEST)
 
 

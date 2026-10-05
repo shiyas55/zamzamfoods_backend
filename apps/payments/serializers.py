@@ -16,6 +16,8 @@ class PaymentSerializer(serializers.ModelSerializer):
     payment_type = serializers.SerializerMethodField()
     order_number = serializers.CharField(source="order.order_number", read_only=True)
     reversed_by_name = serializers.SerializerMethodField()
+    staff_member_name = serializers.SerializerMethodField()
+    staff_member_role = serializers.CharField(source="staff_member.role_type", read_only=True)
 
     class Meta:
         model = Payment
@@ -35,6 +37,9 @@ class PaymentSerializer(serializers.ModelSerializer):
             "reference_number",
             "collected_by",
             "collected_by_name",
+            "staff_member",
+            "staff_member_name",
+            "staff_member_role",
             "received_at",
             "notes",
             "reversed_by",
@@ -50,6 +55,8 @@ class PaymentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "collected_by_name",
+            "staff_member_name",
+            "staff_member_role",
             "payment_type",
             "order_number",
             "reversed_by",
@@ -64,8 +71,16 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_collected_by_name(self, obj):
+        if obj.staff_member:
+            return f"{obj.staff_member.full_name} ({obj.staff_member.role_type})"
         if obj.collected_by:
             return obj.collected_by.get_full_name() or obj.collected_by.username
+        return ""
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_staff_member_name(self, obj):
+        if obj.staff_member:
+            return obj.staff_member.full_name
         return ""
 
     @extend_schema_field(OpenApiTypes.STR)
@@ -82,6 +97,7 @@ class ReversePaymentSerializer(serializers.Serializer):
 class CreatePaymentSerializer(serializers.Serializer):
     customer_id = serializers.UUIDField()
     order_id = serializers.UUIDField(required=False, allow_null=True)
+    staff_member_id = serializers.UUIDField(required=False, allow_null=True)
     payment_type = serializers.ChoiceField(choices=["ORDER_PAYMENT", "PREVIOUS_CREDIT"], required=False, allow_null=True)
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
     payment_method = serializers.ChoiceField(choices=Payment.Method.choices)
@@ -154,4 +170,5 @@ class CreatePaymentSerializer(serializers.Serializer):
             reference_number=validated_data.get("reference_number", ""),
             notes=validated_data.get("notes", ""),
             received_at=validated_data.get("received_at"),
+            staff_member_id=validated_data.get("staff_member_id"),
         )

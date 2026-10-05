@@ -48,10 +48,12 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Media files are NOT served by Django/WhiteNoise in production.
-# Use Supabase Storage or an S3-compatible service for media uploads.
-MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Media files: Use Cloudinary Cloud Storage when configured with valid secret
+if _is_valid_cloudinary:
+    DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+else:
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
 
 # ─── CORS & CSRF ──────────────────────────────────────────────────────────────
 def _normalize_origin(origin: str) -> str:

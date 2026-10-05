@@ -184,6 +184,7 @@ class DriverExpenseSerializer(serializers.ModelSerializer):
     driver_name = serializers.SerializerMethodField()
     route_name = serializers.SerializerMethodField()
     category_display = serializers.CharField(source="get_category_display", read_only=True)
+    created_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = DriverExpense
@@ -200,10 +201,11 @@ class DriverExpenseSerializer(serializers.ModelSerializer):
             "notes",
             "receipt_reference",
             "created_by",
+            "created_by_name",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "driver", "driver_name", "route_name", "category_display", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["id", "driver", "driver_name", "route_name", "category_display", "created_by", "created_by_name", "created_at", "updated_at"]
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_driver_name(self, obj):
@@ -215,7 +217,14 @@ class DriverExpenseSerializer(serializers.ModelSerializer):
     def get_route_name(self, obj):
         if obj.driver and obj.driver.assigned_route:
             return obj.driver.assigned_route.name
-        return "General / Shop"
+        return "Shop / Direct"
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            role_label = f" ({obj.created_by.role.capitalize()})" if getattr(obj.created_by, "role", None) else ""
+            return f"{obj.created_by.get_full_name() or obj.created_by.username}{role_label}"
+        return "—"
 
     def validate_amount(self, value):
         if value <= Decimal("0.00"):

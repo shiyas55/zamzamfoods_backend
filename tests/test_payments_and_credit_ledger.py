@@ -133,3 +133,60 @@ class PaymentAndCreditLedgerTests(APITestCase):
         })
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Decimal(res.data["amount"]), Decimal("250.00"))
+
+    def test_dynamic_order_creation_and_balance_update(self):
+        """
+        Verify that order entry dynamically updates customer balance,
+        order edit updates by delta, and payment collection reduces balance.
+        """
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. Initially shop has 0 balance
+        self.assertEqual(self.shop.current_balance, Decimal("0.00"))
+
+        # 2. Enter order for 20 Kubbus (20 * 35.00 = 700.00)
+        order_res = self.client.post("/api/v1/orders/", {
+            "customer_id": str(self.shop.id),
+            "order_date": "2026-10-05",
+            "items": [{"product_id": str(self.product.id), "quantity": 20}],
+            "notes": "Daily order"
+        }, format="json")
+        self.assertEqual(order_res.status_code, status.HTTP_201_CREATED)
+        order_id = order_res.data["id"]
+
+        # Shop balance must be dynamically 700.00
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.current_balance, Decimal("700.00"))
+
+        # Verify Customer API returns 700.00
+        cust_res = self.client.get(f"/api/v1/customers/{self.shop.id}/")
+        self.assertEqual(cust_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(cust_res.data["current_balance"]), Decimal("700.00"))
+
+        # 3. Edit order to 30 Kubbus (30 * 35.00 = 1050.00, delta = +350.00)
+        edit_res = self.client.patch(f"/api/v1/orders/{order_id}/", {
+            "items": [{"product_id": str(self.product.id), "quantity": 30}]
+        }, format="json")
+        self.assertEqual(edit_res.status_code, status.HTTP_200_OK)
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.current_balance, Decimal("1050.00"))
+
+        # 4. Record payment for 400.00
+        pay_res = self.client.post(reverse("api_v1:payment-list"), {
+            "customer_id": str(self.shop.id),
+            "amount": "400.00",
+            "payment_method": "CASH",
+            "notes": "Collected cash"
+        })
+        self.assertEqual(pay_res.status_code, status.HTTP_201_CREATED)
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.current_balance, Decimal("650.00"))
+
+        # 5. Delete order -> balance reduces by 1050.00, becomes -400.00 (advance)
+        del_res = self.client.delete(f"/api/v1/orders/{order_id}/")
+        self.assertEqual(del_res.status_code, status.HTTP_204_NO_CONTENT)
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.current_balance, Decimal("-400.00"))

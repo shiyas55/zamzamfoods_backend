@@ -138,6 +138,14 @@ class SystemSettings(TimeStampedUUIDModel):
         default=True,
         help_text="Master toggle to enable or disable customer online self-ordering via public link"
     )
+    is_order_discount_enabled = models.BooleanField(
+        default=True,
+        help_text="Master toggle to show or hide the 'Disc (₹)' column in Fast Wholesale Order Entry"
+    )
+    is_driver_module_enabled = models.BooleanField(
+        default=True,
+        help_text="Master toggle to enable or disable the entire Delivery Driver portion, driver mobile portal, routes driver dispatch, and driver performance tracking across the system"
+    )
     is_maintenance_mode = models.BooleanField(
         default=False,
         help_text="Master toggle to put system under maintenance. When ON, only Admin/Owner can access."
@@ -169,6 +177,14 @@ class SystemSettings(TimeStampedUUIDModel):
         blank=True,
         default="",
         help_text="Active license/upgrade key used to unlock or extend the plan"
+    )
+
+    # Security PIN Lock for Business Settings & System Controls
+    settings_pin_code = models.CharField(
+        max_length=10,
+        default="7667",
+        blank=True,
+        help_text="4-digit security PIN to access Business Settings & System Controls (Default: 7667)"
     )
 
     class Meta:
@@ -208,3 +224,70 @@ class SystemSettings(TimeStampedUUIDModel):
             }
         )
         return settings_obj
+
+
+class BusinessDocument(TimeStampedUUIDModel):
+    """
+    Zamzam Foods own compliance and business documents.
+    Stores FSSAI food safety license, GST certificate, trade license,
+    FSSAI registration, insurance policies, bank documents, etc.
+    Separate from CustomerDocument (which stores customer shop KYC docs).
+    """
+    from django.conf import settings as django_settings
+
+    class DocumentType(models.TextChoices):
+        FSSAI_LICENSE     = "FSSAI_LICENSE",     "FSSAI Food Safety License"
+        GST_CERTIFICATE   = "GST_CERTIFICATE",   "GST Registration Certificate"
+        TRADE_LICENSE     = "TRADE_LICENSE",     "Trade / Municipal License"
+        SHOP_ACT          = "SHOP_ACT",          "Shop & Establishment Act"
+        FIRE_NOC          = "FIRE_NOC",          "Fire NOC / Safety Certificate"
+        POLLUTION_NOC     = "POLLUTION_NOC",     "Pollution Control NOC"
+        BANK_DOCUMENT     = "BANK_DOCUMENT",     "Bank Account / Cheque"
+        INSURANCE         = "INSURANCE",         "Business Insurance Policy"
+        RENT_AGREEMENT    = "RENT_AGREEMENT",    "Rent / Lease Agreement"
+        PAN_CARD          = "PAN_CARD",          "PAN Card"
+        UDYAM             = "UDYAM",             "Udyam / MSME Registration"
+        HALAL_CERT        = "HALAL_CERT",        "Halal Certification"
+        QUALITY_CERT      = "QUALITY_CERT",      "Quality / ISO Certification"
+        OTHER             = "OTHER",             "Other Document"
+
+    title = models.CharField(max_length=200, help_text="Title or name of the document")
+    document_type = models.CharField(
+        max_length=40,
+        choices=DocumentType.choices,
+        default=DocumentType.OTHER,
+        db_index=True,
+    )
+    file = models.FileField(
+        upload_to="business_documents/%Y/%m/",
+        help_text="Uploaded document file (PDF, image, etc.)"
+    )
+    file_name = models.CharField(max_length=255, blank=True)
+    file_size = models.BigIntegerField(default=0, help_text="File size in bytes")
+    mime_type = models.CharField(max_length=100, blank=True)
+    document_number = models.CharField(
+        max_length=150, blank=True,
+        help_text="License / registration number (e.g. FSSAI 13325999000000)"
+    )
+    issuing_authority = models.CharField(
+        max_length=200, blank=True,
+        help_text="Issuing body or government authority"
+    )
+    issue_date = models.DateField(null=True, blank=True, help_text="Date of issue")
+    expiry_date = models.DateField(null=True, blank=True, help_text="Expiry / renewal date")
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True, help_text="Mark document as active/inactive")
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="uploaded_business_documents",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Business Document"
+        verbose_name_plural = "Business Documents"
+
+    def __str__(self):
+        return f"{self.title} ({self.get_document_type_display()})"
