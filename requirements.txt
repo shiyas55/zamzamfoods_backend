@@ -20,3 +20,7 @@ whitenoise>=6.6.0
 
 # ─── Supabase SDK (optional backend integration) ──────────────────────────────
 supabase>=2.0.0
+
+# ─── Cloudinary Cloud Storage ──────────────────────────────────────────────────
+cloudinary>=1.40.0
+django-cloudinary-storage>=0.3.0
