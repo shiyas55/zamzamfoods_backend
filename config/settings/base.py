@@ -106,8 +106,8 @@ MEDIA_ROOT = BASE_DIR / "media"
 # ─── Cloudinary Cloud Media Storage ───────────────────────────────────────────
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "eil4vufk")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "248754147641721")
-CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
-CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "")
+CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL", "")
 
 CLOUDINARY_STORAGE = {
     "CLOUD_NAME": CLOUDINARY_CLOUD_NAME,
@@ -115,7 +115,14 @@ CLOUDINARY_STORAGE = {
     "API_SECRET": CLOUDINARY_API_SECRET,
 }
 
-if CLOUDINARY_API_SECRET or CLOUDINARY_URL:
+# Only enable Cloudinary if a genuine secret is supplied (not identical to the numeric API Key)
+_is_valid_cloudinary = bool(
+    CLOUDINARY_URL or (
+        CLOUDINARY_API_SECRET and CLOUDINARY_API_SECRET != CLOUDINARY_API_KEY
+    )
+)
+
+if _is_valid_cloudinary:
     DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
