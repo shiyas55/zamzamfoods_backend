@@ -1,8 +1,10 @@
+from decimal import Decimal
+from django.db.models import Sum
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from drf_spectacular.utils import extend_schema_field
 from drf_spectacular.types import OpenApiTypes
-from .models import User
+from .models import User, StaffMember, StaffAttendance, StaffPayout
 
 class UserSerializer(serializers.ModelSerializer):
     """
@@ -148,3 +150,166 @@ class CreateUserSerializer(serializers.ModelSerializer):
         user.set_password(password)
         user.save()
         return user
+
+
+class StaffMemberSerializer(serializers.ModelSerializer):
+    user_details = serializers.SerializerMethodField()
+    has_login_account = serializers.BooleanField(read_only=True)
+    current_daily_wage = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    tenure_days = serializers.IntegerField(read_only=True)
+    tenure_slab_label = serializers.CharField(read_only=True)
+    total_earned = serializers.SerializerMethodField()
+    total_paid = serializers.SerializerMethodField()
+    balance_due = serializers.SerializerMethodField()
+    proof_document_url = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(default=True, required=False)
+
+    class Meta:
+        model = StaffMember
+        fields = [
+            "id",
+            "user",
+            "user_details",
+            "has_login_account",
+            "full_name",
+            "phone_number",
+            "role_type",
+            "designation",
+            "joined_date",
+            "wage_type",
+            "custom_daily_wage",
+            "current_daily_wage",
+            "tenure_days",
+            "tenure_slab_label",
+            "proof_document",
+            "proof_document_url",
+            "is_active",
+            "notes",
+            "total_earned",
+            "total_paid",
+            "balance_due",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "has_login_account",
+            "current_daily_wage",
+            "tenure_days",
+            "tenure_slab_label",
+            "proof_document_url",
+            "total_earned",
+            "total_paid",
+            "balance_due",
+            "created_at",
+            "updated_at",
+        ]
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_user_details(self, obj):
+        if obj.user:
+            return {
+                "id": str(obj.user.id),
+                "username": obj.user.username,
+                "role": obj.user.role,
+                "email": obj.user.email,
+                "is_active": obj.user.is_active,
+            }
+        return None
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_proof_document_url(self, obj):
+        if obj.proof_document:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.proof_document.url)
+            return obj.proof_document.url
+        return None
+
+    @extend_schema_field(OpenApiTypes.DECIMAL)
+    def get_total_earned(self, obj):
+        total = obj.attendances.aggregate(total=Sum("daily_wage"))["total"] or Decimal("0.00")
+        return str(total)
+
+    @extend_schema_field(OpenApiTypes.DECIMAL)
+    def get_total_paid(self, obj):
+        total = obj.payouts.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        return str(total)
+
+    @extend_schema_field(OpenApiTypes.DECIMAL)
+    def get_balance_due(self, obj):
+        earned = Decimal(self.get_total_earned(obj))
+        paid = Decimal(self.get_total_paid(obj))
+        return str(earned - paid)
+
+
+class StaffAttendanceSerializer(serializers.ModelSerializer):
+    staff_name = serializers.CharField(source="staff.full_name", read_only=True)
+    staff_designation = serializers.CharField(source="staff.designation", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    marked_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffAttendance
+        fields = [
+            "id",
+            "staff",
+            "staff_name",
+            "staff_designation",
+            "date",
+            "status",
+            "status_display",
+            "daily_wage",
+            "notes",
+            "marked_by",
+            "marked_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "daily_wage", "marked_by", "marked_by_name", "created_at", "updated_at"]
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_marked_by_name(self, obj):
+        if obj.marked_by:
+            return obj.marked_by.get_full_name() or obj.marked_by.username
+        return "—"
+
+
+class StaffPayoutSerializer(serializers.ModelSerializer):
+    staff_name = serializers.CharField(source="staff.full_name", read_only=True)
+    payout_type_display = serializers.CharField(source="get_payout_type_display", read_only=True)
+    payment_method_display = serializers.CharField(source="get_payment_method_display", read_only=True)
+    paid_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffPayout
+        fields = [
+            "id",
+            "staff",
+            "staff_name",
+            "amount",
+            "payout_type",
+            "payout_type_display",
+            "payment_method",
+            "payment_method_display",
+            "date",
+            "reference",
+            "notes",
+            "paid_by",
+            "paid_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "paid_by", "paid_by_name", "created_at", "updated_at"]
+
+    @extend_schema_field(OpenApiTypes.STR)
+    def get_paid_by_name(self, obj):
+        if obj.paid_by:
+            return obj.paid_by.get_full_name() or obj.paid_by.username
+        return "—"
+
+    def validate_amount(self, value):
+        if value <= Decimal("0.00"):
+            raise serializers.ValidationError("Payout amount must be greater than zero.")
+        return value
+

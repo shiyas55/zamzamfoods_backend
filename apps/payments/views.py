@@ -1,5 +1,6 @@
 from decimal import Decimal
-from django.db.models import Sum
+from django.db import models
+from django.db.models import Sum, Q
 from django.utils import timezone
 from rest_framework import viewsets, permissions, status, filters
 from rest_framework.decorators import action
@@ -57,7 +58,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Payment.objects.none()
 
-        queryset = Payment.objects.select_related("customer", "customer__route", "collected_by", "order", "reversed_by")
+        queryset = Payment.objects.select_related("customer", "customer__route", "collected_by", "staff_member", "order", "reversed_by")
 
         # Query filters
         customer_id = self.request.query_params.get("customer")
@@ -68,9 +69,21 @@ class PaymentViewSet(viewsets.ModelViewSet):
         if route_id:
             queryset = queryset.filter(customer__route_id=route_id)
 
-        driver_id = self.request.query_params.get("driver")
+        driver_id = self.request.query_params.get("driver") or self.request.query_params.get("collector")
         if driver_id:
-            queryset = queryset.filter(collected_by_id=driver_id)
+            queryset = queryset.filter(
+                models.Q(collected_by_id=driver_id)
+                | models.Q(staff_member_id=driver_id)
+                | models.Q(staff_member__user_id=driver_id)
+            )
+
+        staff_member_id = self.request.query_params.get("staff_member")
+        if staff_member_id:
+            queryset = queryset.filter(
+                models.Q(staff_member_id=staff_member_id)
+                | models.Q(staff_member__user_id=staff_member_id)
+                | models.Q(collected_by_id=staff_member_id)
+            )
 
         method = self.request.query_params.get("method")
         if method:

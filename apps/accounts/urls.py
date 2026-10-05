@@ -7,10 +7,16 @@ from .views import (
     UserProfileView,
     MySessionsView,
     UserViewSet,
+    StaffMemberViewSet,
+    StaffAttendanceViewSet,
+    StaffPayoutViewSet,
 )
 
 router = DefaultRouter()
 router.register(r"users", UserViewSet, basename="user")
+router.register(r"staff", StaffMemberViewSet, basename="staff")
+router.register(r"staff-attendance", StaffAttendanceViewSet, basename="staff-attendance")
+router.register(r"staff-payouts", StaffPayoutViewSet, basename="staff-payouts")
 
 urlpatterns = [
     # Cookie-based & Bearer auth endpoints

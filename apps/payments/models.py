@@ -68,6 +68,14 @@ class Payment(TimeStampedUUIDModel):
         related_name="collected_payments",
         help_text="Staff member (driver/manager) who received the funds"
     )
+    staff_member = models.ForeignKey(
+        "accounts.StaffMember",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="collected_payments",
+        help_text="Staff or Share Member who physically received the money from the shop"
+    )
     received_at = models.DateTimeField(
         default=timezone.now,
         db_index=True,

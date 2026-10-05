@@ -115,3 +115,59 @@ class CustomerProductPrice(TimeStampedUUIDModel):
 
     def __str__(self):
         return f"{self.customer.name} - {self.product.name}: ₹{self.price}"
+
+
+class CustomerDocument(TimeStampedUUIDModel):
+    """
+    Shop documents and multi-file storage (licenses, GST certificates, agreements, KYC, shop photos, etc.)
+    """
+    class DocumentType(models.TextChoices):
+        FSSAI_LICENSE = "FSSAI_LICENSE", "FSSAI Food License"
+        GST_CERTIFICATE = "GST_CERTIFICATE", "GST Certificate"
+        TRADE_LICENSE = "TRADE_LICENSE", "Trade / Municipal License"
+        RENT_AGREEMENT = "RENT_AGREEMENT", "Rent / Lease Agreement"
+        ID_PROOF = "ID_PROOF", "Owner / Manager ID Proof"
+        SHOP_PHOTO = "SHOP_PHOTO", "Shop Front / Location Photo"
+        BANK_PROOF = "BANK_PROOF", "Bank Cheque / Passbook"
+        CONTRACT = "CONTRACT", "Wholesale Supply Contract"
+        OTHER = "OTHER", "Other Document"
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="documents",
+        help_text="Customer shop this document belongs to"
+    )
+    title = models.CharField(max_length=200, help_text="Title or name of document")
+    document_type = models.CharField(
+        max_length=40,
+        choices=DocumentType.choices,
+        default=DocumentType.OTHER,
+        help_text="Category of the document"
+    )
+    file = models.FileField(
+        upload_to="customer_documents/%Y/%m/",
+        help_text="Uploaded document file (PDF, image, doc, etc.)"
+    )
+    file_name = models.CharField(max_length=255, blank=True, help_text="Original file name")
+    file_size = models.BigIntegerField(default=0, help_text="File size in bytes")
+    mime_type = models.CharField(max_length=100, blank=True, help_text="MIME type")
+    document_number = models.CharField(max_length=100, blank=True, help_text="Optional document or registration number")
+    expiry_date = models.DateField(null=True, blank=True, help_text="Optional expiry date for licenses/agreements")
+    notes = models.TextField(blank=True, help_text="Optional notes or description")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_customer_documents"
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Customer Document"
+        verbose_name_plural = "Customer Documents"
+
+    def __str__(self):
+        return f"{self.customer.name} - {self.title} ({self.get_document_type_display()})"
+

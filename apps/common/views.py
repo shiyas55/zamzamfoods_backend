@@ -5,8 +5,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from apps.common.permissions import IsManagerOrOwner
-from .models import ActivityLog
-from .serializers import ActivityLogSerializer
+from .models import ActivityLog, BusinessDocument
+from .serializers import ActivityLogSerializer, BusinessDocumentSerializer
 
 class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -130,6 +130,71 @@ class SystemSettingsView(APIView):
         return self.patch(request)
 
 
+class VerifySettingsPinView(APIView):
+    """
+    POST /api/v1/settings/verify-pin/
+    Verifies if entered 4-digit PIN matches the stored settings_pin_code (Default: 7667).
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .models import SystemSettings
+        pin = str(request.data.get("pin") or "").strip()
+        settings_obj = SystemSettings.get_settings()
+        expected_pin = settings_obj.settings_pin_code or "7667"
+        if pin == expected_pin:
+            return Response({"valid": True, "message": "PIN verified successfully."})
+        return Response({"valid": False, "error": "Incorrect PIN code. Please try again."}, status=400)
+
+
+class ResetSettingsPinView(APIView):
+    """
+    POST /api/v1/settings/reset-pin/
+    Resets the 4-digit security PIN by verifying admin (Owner) username and password.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from django.contrib.auth import authenticate
+        from .models import SystemSettings
+        from apps.common.audit import log_activity
+
+        username = str(request.data.get("username") or "").strip()
+        password = str(request.data.get("password") or "").strip()
+        new_pin = str(request.data.get("new_pin") or "7667").strip()
+
+        if not username or not password:
+            return Response({"error": "Admin username and password are required to reset the PIN."}, status=400)
+
+        # Authenticate admin user
+        user = authenticate(request, username=username, password=password)
+        if not user or not user.is_active or (user.role != "OWNER" and not user.is_superuser):
+            return Response({"error": "Invalid admin credentials. Only system Owner / Administrator can reset the PIN."}, status=401)
+
+        if not new_pin.isdigit() or len(new_pin) != 4:
+            return Response({"error": "PIN must be exactly 4 numeric digits (e.g. 7667)."}, status=400)
+
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.settings_pin_code = new_pin
+        settings_obj.save(update_fields=["settings_pin_code", "updated_at"])
+
+        log_activity(
+            user=user,
+            action="UPDATED",
+            entity_type="SYSTEM_SETTING",
+            entity_id=str(settings_obj.id),
+            entity_name="System Settings",
+            summary=f"Security PIN code reset to {new_pin} by admin {user.username}",
+            details={"new_pin": new_pin},
+        )
+
+        return Response({
+            "success": True,
+            "message": f"Settings PIN code successfully reset to {new_pin}.",
+            "pin": new_pin,
+        })
+
+
 class DatabaseStatsView(APIView):
     """
     GET /api/v1/database/stats/
@@ -178,16 +243,17 @@ class DatabaseStatsView(APIView):
             size_formatted = f"{total_size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
         modules_config = [
-            {"id": "products", "name": "Products & Categories", "models": ["products.Category", "products.Product"], "icon": "Package"},
-            {"id": "customers", "name": "Customers & Price Lists", "models": ["customers.CustomerShop", "customers.CustomerProductPrice"], "icon": "Store"},
-            {"id": "orders", "name": "Orders & Order Items", "models": ["orders.Order", "orders.OrderItem"], "icon": "ShoppingCart"},
-            {"id": "deliveries", "name": "Deliveries & Stops", "models": ["deliveries.DeliveryDispatch", "deliveries.DeliveryStop"], "icon": "Truck"},
-            {"id": "payments", "name": "Payments", "models": ["payments.Payment"], "icon": "CreditCard"},
-            {"id": "credits", "name": "Credit Ledger", "models": ["credits.CreditLedgerEntry"], "icon": "BookOpen"},
-            {"id": "routes", "name": "Routes & Shifts", "models": ["routes.Route", "routes.DriverShift", "routes.DriverExpense"], "icon": "MapPin"},
-            {"id": "whatsapp", "name": "WhatsApp Conversations", "models": ["whatsapp.WhatsAppConversation", "whatsapp.WhatsAppMessage", "whatsapp.WhatsAppCustomer"], "icon": "MessageCircle"},
-            {"id": "accounts", "name": "Users & Sessions", "models": ["accounts.User", "accounts.DeviceSession"], "icon": "Users"},
-            {"id": "logs", "name": "Audit & System Settings", "models": ["common.ActivityLog", "common.SystemSettings"], "icon": "ShieldCheck"},
+            {"id": "accounts", "name": "Users & Staff Profiles", "models": ["accounts.User", "accounts.DeviceSession", "accounts.StaffMember", "accounts.StaffAttendance", "accounts.StaffPayout"], "icon": "Users"},
+            {"id": "products", "name": "Products & Pricing", "models": ["products.Product"], "icon": "Package"},
+            {"id": "routes", "name": "Routes, Drivers & Shifts", "models": ["routes.Route", "routes.Driver", "routes.DriverShift", "routes.DriverExpense"], "icon": "MapPin"},
+            {"id": "customers", "name": "Customer Shops & Documents", "models": ["customers.Customer", "customers.CustomerProductPrice", "customers.CustomerDocument"], "icon": "Store"},
+            {"id": "orders", "name": "Orders & Order Items", "models": ["orders.Order", "orders.OrderItem", "orders.OrderActivityLog"], "icon": "ShoppingCart"},
+            {"id": "deliveries", "name": "Deliveries & Dispatches", "models": ["deliveries.Delivery"], "icon": "Truck"},
+            {"id": "payments", "name": "Payments & Receipts", "models": ["payments.Payment"], "icon": "CreditCard"},
+            {"id": "credits", "name": "Credit Ledger Transactions", "models": ["credits.CreditTransaction"], "icon": "BookOpen"},
+            {"id": "reports", "name": "Daily Closing Reports", "models": ["reports.DailyClosing"], "icon": "FileText"},
+            {"id": "whatsapp", "name": "WhatsApp Messages & Customers", "models": ["whatsapp.WhatsAppAccount", "whatsapp.WhatsAppCustomer", "whatsapp.WhatsAppConversation", "whatsapp.WhatsAppMessage"], "icon": "MessageCircle"},
+            {"id": "logs", "name": "Audit & System Settings", "models": ["common.SystemSettings", "common.BusinessDocument", "common.ActivityLog"], "icon": "ShieldCheck"},
         ]
 
         total_records = 0
@@ -285,16 +351,17 @@ class DatabaseBackupView(APIView):
         selected_modules = request.data.get("modules", [])
 
         module_models_map = {
-            "products": ["products.Category", "products.Product"],
-            "customers": ["customers.CustomerShop", "customers.CustomerProductPrice"],
-            "orders": ["orders.Order", "orders.OrderItem"],
-            "deliveries": ["deliveries.DeliveryDispatch", "deliveries.DeliveryStop"],
+            "accounts": ["accounts.User", "accounts.DeviceSession", "accounts.StaffMember", "accounts.StaffAttendance", "accounts.StaffPayout"],
+            "products": ["products.Product"],
+            "routes": ["routes.Route", "routes.Driver", "routes.DriverShift", "routes.DriverExpense"],
+            "customers": ["customers.Customer", "customers.CustomerProductPrice", "customers.CustomerDocument"],
+            "orders": ["orders.Order", "orders.OrderItem", "orders.OrderActivityLog"],
+            "deliveries": ["deliveries.Delivery"],
             "payments": ["payments.Payment"],
-            "credits": ["credits.CreditLedgerEntry"],
-            "routes": ["routes.Route", "routes.DriverShift", "routes.DriverExpense"],
-            "whatsapp": ["whatsapp.WhatsAppConversation", "whatsapp.WhatsAppMessage", "whatsapp.WhatsAppCustomer"],
-            "accounts": ["accounts.User", "accounts.DeviceSession"],
-            "logs": ["common.ActivityLog", "common.SystemSettings"],
+            "credits": ["credits.CreditTransaction"],
+            "reports": ["reports.DailyClosing"],
+            "whatsapp": ["whatsapp.WhatsAppAccount", "whatsapp.WhatsAppCustomer", "whatsapp.WhatsAppConversation", "whatsapp.WhatsAppMessage"],
+            "logs": ["common.SystemSettings", "common.BusinessDocument", "common.ActivityLog"],
         }
 
         if backup_type == "full" or not selected_modules:
@@ -335,64 +402,103 @@ class DatabaseBackupView(APIView):
                     pg_dump_executed = False
 
             if not pg_dump_executed:
-                if db_engine == "sqlite":
-                    sql_output.append("PRAGMA foreign_keys=OFF;")
-                    sql_output.append("BEGIN TRANSACTION;")
-                    try:
-                        for line in connection.connection.iterdump():
-                            sql_output.append(f"{line}")
-                    except Exception:
-                        pass
-                    sql_output.append("COMMIT;")
-                else:
-                    # Robust PostgreSQL SQL DDL/DML generator
-                    sql_output.append("BEGIN;")
+                # ── Portable, Universal ORM-based SQL Generator (SQLite & PostgreSQL Compatible) ──
+                # We do NOT use sqlite3.iterdump() because it produces SQLite-specific DDL (CREATE TABLE, PRAGMA)
+                # that fails when restored to PostgreSQL/Supabase.
+                # Instead, we emit pure ANSI/Postgres-compatible INSERT statements with ON CONFLICT DO NOTHING.
+                sql_output.append("BEGIN;")
+                if db_engine == "postgresql":
                     sql_output.append("SET CONSTRAINTS ALL DEFERRED;\n")
+                elif db_engine == "sqlite":
+                    sql_output.append("PRAGMA foreign_keys = OFF;\n")
 
-                    total_rows = 0
-                    for mod_id in target_modules:
-                        sql_output.append(f"-- ─── MODULE: {mod_id.upper()} ───")
-                        for model_path in module_models_map[mod_id]:
-                            try:
-                                app_label, model_name = model_path.split(".")
-                                model = apps.get_model(app_label, model_name)
-                                table_name = model._meta.db_table
-                                qs = model.objects.all()
-                                count = qs.count()
-                                if count == 0:
-                                    continue
+                # Dependency order: parent tables must be inserted before dependent child tables
+                ORDERED_MODULES = [
+                    "accounts",
+                    "products",
+                    "routes",
+                    "customers",
+                    "orders",
+                    "deliveries",
+                    "payments",
+                    "credits",
+                    "reports",
+                    "whatsapp",
+                    "logs",
+                ]
+                ordered_targets = [m for m in ORDERED_MODULES if m in target_modules]
+                for m in target_modules:
+                    if m not in ordered_targets:
+                        ordered_targets.append(m)
 
-                                total_rows += count
-                                sql_output.append(f"-- Table: {table_name} ({count} rows)")
+                total_rows = 0
+                from django.db.models import JSONField
+                import json as _json
+                import ast as _ast
 
-                                fields = [f for f in model._meta.fields]
-                                field_names = [f.column for f in fields]
-                                cols_sql = ", ".join([f'"{name}"' for name in field_names])
-
-                                for obj in qs.iterator(chunk_size=500):
-                                    val_list = []
-                                    for f in fields:
-                                        val = getattr(obj, f.attname)
-                                        if val is None:
-                                            val_list.append("NULL")
-                                        elif isinstance(val, (int, float)):
-                                            val_list.append(str(val))
-                                        elif isinstance(val, bool):
-                                            val_list.append("TRUE" if val else "FALSE")
-                                        else:
-                                            # Safely escape string/datetime values
-                                            clean_val = str(val).replace("'", "''")
-                                            val_list.append(f"'{clean_val}'")
-                                    row_values = ", ".join(val_list)
-                                    sql_output.append(f'INSERT INTO "{table_name}" ({cols_sql}) VALUES ({row_values}) ON CONFLICT DO NOTHING;')
-                                sql_output.append("")
-                            except Exception:
+                for mod_id in ordered_targets:
+                    sql_output.append(f"-- ─── MODULE: {mod_id.upper()} ───")
+                    for model_path in module_models_map.get(mod_id, []):
+                        try:
+                            app_label, model_name = model_path.split(".")
+                            model = apps.get_model(app_label, model_name)
+                            table_name = model._meta.db_table
+                            qs = model.objects.all()
+                            count = qs.count()
+                            if count == 0:
                                 continue
 
-                    sql_output.append("COMMIT;\n")
+                            total_rows += count
+                            sql_output.append(f"-- Table: {table_name} ({count} rows)")
+
+                            fields = [f for f in model._meta.fields]
+                            field_names = [f.column for f in fields]
+                            cols_sql = ", ".join([f'"{name}"' for name in field_names])
+
+                            for obj in qs.iterator(chunk_size=500):
+                                val_list = []
+                                for f in fields:
+                                    val = getattr(obj, f.attname)
+                                    if val is None:
+                                        val_list.append("NULL")
+                                    elif isinstance(val, bool):
+                                        val_list.append("TRUE" if val else "FALSE")
+                                    elif isinstance(val, (int, float)):
+                                        val_list.append(str(val))
+                                    elif isinstance(f, JSONField) or isinstance(val, (dict, list)) or f.name in ["details", "extra", "metadata"]:
+                                        # Clean double-quoted JSON string for PostgreSQL & SQLite JSONField
+                                        if isinstance(val, (dict, list)):
+                                            parsed = val
+                                        elif isinstance(val, str):
+                                            val_trimmed = val.strip()
+                                            try:
+                                                parsed = _json.loads(val_trimmed)
+                                            except Exception:
+                                                try:
+                                                    parsed = _ast.literal_eval(val_trimmed)
+                                                except Exception:
+                                                    parsed = val
+                                        else:
+                                            parsed = val
+                                        json_str = _json.dumps(parsed, default=str)
+                                        escaped = json_str.replace("'", "''")
+                                        val_list.append(f"'{escaped}'")
+                                    else:
+                                        # str, UUID, Decimal, datetime, date, etc.
+                                        clean_val = str(val).replace("'", "''")
+                                        val_list.append(f"'{clean_val}'")
+                                row_values = ", ".join(val_list)
+                                sql_output.append(f'INSERT INTO "{table_name}" ({cols_sql}) VALUES ({row_values}) ON CONFLICT DO NOTHING;')
+
+                            sql_output.append("")
+                        except Exception:
+                            continue
+
+                sql_output.append("COMMIT;\n")
+                if db_engine == "postgresql":
                     sql_output.append("-- Sequence reset commands for PostgreSQL:")
-                    for mod_id in target_modules:
-                        for model_path in module_models_map[mod_id]:
+                    for mod_id in ordered_targets:
+                        for model_path in module_models_map.get(mod_id, []):
                             try:
                                 app_label, model_name = model_path.split(".")
                                 model = apps.get_model(app_label, model_name)
@@ -402,6 +508,8 @@ class DatabaseBackupView(APIView):
                                 )
                             except Exception:
                                 pass
+                elif db_engine == "sqlite":
+                    sql_output.append("PRAGMA foreign_keys = ON;\n")
 
                 sql_content = "\n".join(sql_output)
 
@@ -597,36 +705,171 @@ class DatabaseRestoreView(APIView):
         elif format_param in ["sql", "pg_sql", "psql"]:
             from django.db import connection, transaction
 
-            # Split statements cleanly
-            raw_stmts = raw_content.split(";")
-            valid_stmts = []
-            for s in raw_stmts:
-                cleaned = s.strip()
-                if not cleaned:
-                    continue
-                # Skip pure comments
-                lines = [l for l in cleaned.splitlines() if not l.strip().startswith("--")]
-                sql_only = "\n".join(lines).strip()
-                if sql_only:
-                    valid_stmts.append(sql_only)
+            # ── String-aware SQL statement splitter ───────────────────────────
+            # A naive .split(";") breaks on semicolons inside string literals
+            # (e.g. JSON values like '{"note":"a;b"}').
+            # This state machine tracks single-quoted string boundaries.
+            def split_sql_statements(sql_text: str):
+                stmts = []
+                current = []
+                in_string = False
+                i = 0
+                n = len(sql_text)
+                while i < n:
+                    ch = sql_text[i]
+                    if in_string:
+                        current.append(ch)
+                        if ch == "'":
+                            # Check for escaped single-quote ''
+                            if i + 1 < n and sql_text[i + 1] == "'":
+                                current.append("'")
+                                i += 2
+                                continue
+                            else:
+                                in_string = False
+                    else:
+                        if ch == "'":
+                            in_string = True
+                            current.append(ch)
+                        elif ch == "-" and i + 1 < n and sql_text[i + 1] == "-":
+                            # Line comment — skip to end of line
+                            while i < n and sql_text[i] != "\n":
+                                i += 1
+                            i += 1
+                            continue
+                        elif ch == ";":
+                            stmt = "".join(current).strip()
+                            if stmt:
+                                stmts.append(stmt)
+                            current = []
+                        else:
+                            current.append(ch)
+                    i += 1
+                # Trailing statement without semicolon
+                remaining = "".join(current).strip()
+                if remaining:
+                    stmts.append(remaining)
+                return stmts
+
+            # ── Filter: only keep safe DML statements ────────────────────────
+            # Skip: transaction controls, DDL (CREATE/DROP/ALTER), SQLite-specific
+            # Only run: INSERT, UPDATE, DELETE, SELECT setval(), SET CONSTRAINTS
+            _SKIP_PREFIXES = (
+                "BEGIN", "COMMIT", "END", "ROLLBACK",
+                "CREATE ", "DROP ", "ALTER ", "TRUNCATE ",
+                "PRAGMA ",                   # SQLite-specific
+                "SET FOREIGN_KEY",           # MySQL-specific
+                "LOCK ", "UNLOCK ",
+            )
+            _SKIP_EXACT = {"BEGIN", "BEGIN TRANSACTION", "COMMIT", "END", "COMMIT TRANSACTION", "ROLLBACK"}
+
+            def _is_safe_stmt(s: str) -> bool:
+                upper = s.strip().upper()
+                if upper in _SKIP_EXACT:
+                    return False
+                for prefix in _SKIP_PREFIXES:
+                    if upper.startswith(prefix):
+                        return False
+                return True
+
+            valid_stmts = [
+                s for s in split_sql_statements(raw_content)
+                if s and _is_safe_stmt(s)
+            ]
+
+            if not valid_stmts:
+                return Response({
+                    "error": "No restorable INSERT statements found in the uploaded file. "
+                             "Make sure you upload a Zamzam Foods SQL backup (not a raw SQLite .sql or pg_dump schema file)."
+                }, status=400)
 
             executed_count = 0
+            skipped_count = 0
             try:
+                # In SQLite, PRAGMA foreign_keys = OFF must be executed outside/before transaction
+                if connection.vendor == "sqlite":
+                    try:
+                        connection.cursor().execute("PRAGMA foreign_keys = OFF;")
+                    except Exception:
+                        pass
+
                 with transaction.atomic():
                     with connection.cursor() as cursor:
+                        # Defer constraints on PostgreSQL
+                        if connection.vendor == "postgresql":
+                            try:
+                                cursor.execute("SET CONSTRAINTS ALL DEFERRED;")
+                            except Exception:
+                                pass
+
                         for stmt in valid_stmts:
-                            upper_stmt = stmt.upper()
-                            if upper_stmt in ["BEGIN", "BEGIN TRANSACTION", "COMMIT", "END"]:
+                            stmt_upper = stmt.strip().upper()
+                            # Skip SQLite PRAGMA commands if restoring to PostgreSQL
+                            if connection.vendor == "postgresql" and stmt_upper.startswith("PRAGMA"):
+                                skipped_count += 1
                                 continue
+                            # Skip sequence setval commands if restoring to SQLite
+                            if connection.vendor == "sqlite" and "SETVAL(" in stmt_upper:
+                                skipped_count += 1
+                                continue
+
                             try:
                                 cursor.execute(stmt)
                                 executed_count += 1
                             except Exception as stmt_err:
-                                if "already exists" in str(stmt_err).lower() or "does not exist" in str(stmt_err).lower():
+                                err_lower = str(stmt_err).lower()
+                                # Auto-repair single-quoted JSON dict syntax if PostgreSQL rejected it
+                                if "invalid input syntax for type json" in err_lower:
+                                    try:
+                                        import re
+                                        repaired = re.sub(
+                                            r"'(\{.*?\})'",
+                                            lambda m: "'" + m.group(1).replace("''", '"') + "'",
+                                            stmt,
+                                            flags=re.DOTALL
+                                        )
+                                        cursor.execute(repaired)
+                                        executed_count += 1
+                                        continue
+                                    except Exception:
+                                        pass
+
+                                # Skip benign duplicate/already exists errors
+                                if any(phrase in err_lower for phrase in [
+                                    "already exists",
+                                    "does not exist",
+                                    "duplicate key",
+                                    "relation already exists",
+                                    "column already exists",
+                                    "unique constraint",
+                                    "uniqueviolation",
+                                ]):
+                                    skipped_count += 1
                                     continue
-                                raise stmt_err
+                                # Show first 300 chars of failing statement
+                                short_stmt = stmt[:300] + ("..." if len(stmt) > 300 else "")
+                                raise Exception(f"{str(stmt_err)} | Statement: {short_stmt}")
+
+                        # Resync PostgreSQL sequences after bulk insert
+                        if connection.vendor == "postgresql":
+                            from django.apps import apps
+                            for model in apps.get_models():
+                                try:
+                                    table = model._meta.db_table
+                                    cursor.execute(
+                                        f"SELECT setval(pg_get_serial_sequence('\"{table}\"', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM \"{table}\";"
+                                    )
+                                except Exception:
+                                    pass
             except Exception as e:
-                return Response({"error": f"SQL restoration failed at statement: {str(e)}"}, status=400)
+                return Response({"error": f"SQL restoration failed: {str(e)}"}, status=400)
+            finally:
+                if connection.vendor == "sqlite":
+                    try:
+                        connection.cursor().execute("PRAGMA foreign_keys = ON;")
+                    except Exception:
+                        pass
+
 
             from apps.common.audit import log_activity
             log_activity(
@@ -652,5 +895,254 @@ class DatabaseRestoreView(APIView):
             return Response({"error": f"Unsupported format: '{format_param}'. Please upload a .sql or .json file."}, status=400)
 
 
+class BusinessDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Full CRUD + multi-file batch upload for Zamzam Foods own business documents.
+    (FSSAI food safety license, GST, trade license, HALAL cert, etc.)
+    Owner/Manager only for write operations. All authenticated users can read.
+    """
+    serializer_class = BusinessDocumentSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["title", "document_number", "issuing_authority", "notes"]
+    ordering_fields = ["created_at", "expiry_date", "title", "document_type"]
+    ordering = ["-created_at"]
 
+    def get_permissions(self):
+        if self.action in ["create", "update", "partial_update", "destroy", "batch_upload"]:
+            return [IsManagerOrOwner()]
+        return [permissions.IsAuthenticated()]
+
+    def get_queryset(self):
+        if not self.request.user.is_authenticated:
+            return BusinessDocument.objects.none()
+        qs = BusinessDocument.objects.all()
+
+        doc_type = self.request.query_params.get("document_type")
+        if doc_type:
+            qs = qs.filter(document_type=doc_type)
+
+        is_expired = self.request.query_params.get("is_expired")
+        today = timezone.localdate()
+        from django.db.models import Q
+        if is_expired == "true":
+            qs = qs.filter(expiry_date__lt=today)
+        elif is_expired == "false":
+            qs = qs.filter(Q(expiry_date__isnull=True) | Q(expiry_date__gte=today))
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() == "true")
+
+        return qs
+
+    def perform_create(self, serializer):
+        f = self.request.FILES.get("file")
+        file_name = f.name if f else ""
+        file_size = f.size if f else 0
+        mime_type = getattr(f, "content_type", "") if f else ""
+        title = serializer.validated_data.get("title") or file_name or "Business Document"
+        serializer.save(
+            title=title,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            uploaded_by=self.request.user,
+        )
+
+    from rest_framework.decorators import action
+    from rest_framework.response import Response as DRFResponse
+    from rest_framework import status as drf_status
+
+    @action(detail=False, methods=["post"], url_path="batch-upload")
+    def batch_upload(self, request):
+        """
+        Upload multiple business compliance files at once.
+        POST multipart/form-data:
+          - document_type, title, document_number, issuing_authority,
+            issue_date, expiry_date, notes, is_active
+          - files: one or more files
+        """
+        from rest_framework.decorators import action
+        uploaded_files = request.FILES.getlist("files")
+        if not uploaded_files:
+            single = request.FILES.get("file")
+            if single:
+                uploaded_files = [single]
+            else:
+                return Response({"detail": "No files provided."}, status=400)
+
+        doc_type    = request.data.get("document_type") or BusinessDocument.DocumentType.OTHER
+        base_title  = request.data.get("title", "").strip()
+        doc_number  = request.data.get("document_number", "").strip()
+        authority   = request.data.get("issuing_authority", "").strip()
+        issue_date  = request.data.get("issue_date") or None
+        expiry_date = request.data.get("expiry_date") or None
+        notes       = request.data.get("notes", "").strip()
+        is_active   = request.data.get("is_active", "true").lower() != "false"
+
+        created = []
+        for idx, f in enumerate(uploaded_files):
+            file_title = base_title
+            if not file_title:
+                file_title = f.name
+            elif len(uploaded_files) > 1:
+                file_title = f"{base_title} ({idx + 1})"
+
+            doc = BusinessDocument.objects.create(
+                title=file_title,
+                document_type=doc_type,
+                file=f,
+                file_name=f.name,
+                file_size=f.size,
+                mime_type=getattr(f, "content_type", ""),
+                document_number=doc_number,
+                issuing_authority=authority,
+                issue_date=issue_date,
+                expiry_date=expiry_date,
+                notes=notes,
+                is_active=is_active,
+                uploaded_by=request.user,
+            )
+            created.append(doc)
+
+        serializer = self.get_serializer(created, many=True, context={"request": request})
+        return Response(serializer.data, status=201)
+
+
+class DatabaseClearAllView(APIView):
+    """
+    POST /api/v1/database/clear-all/
+    Permanently wipes all business and operational data from the database.
+    STRICTLY RESTRICTED TO SYSTEM OWNER / SUPERUSER.
+    Preserves ONLY accounts with role='OWNER' or is_superuser=True.
+    Requires:
+      - PIN verification (against SystemSettings.settings_pin_code or admin password)
+      - Confirmation phrase: "CLEAR ALL DATA"
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        # Strict authorization: Only Owner or Superuser can execute clear-all
+        if not user.is_authenticated or (user.role != "OWNER" and not user.is_superuser):
+            return Response(
+                {"error": "Unauthorized. Only Business Owner or System Administrator can clear system data."},
+                status=403
+            )
+
+        from .models import SystemSettings, ActivityLog, BusinessDocument
+        from apps.credits.models import CreditTransaction
+        from apps.payments.models import Payment
+        from apps.deliveries.models import Delivery
+        from apps.orders.models import OrderItem, OrderActivityLog, Order
+        from apps.whatsapp.models import WhatsAppMessage, WhatsAppConversation, WhatsAppCustomer, WhatsAppAccount
+        from apps.customers.models import CustomerDocument, CustomerProductPrice, Customer
+        from apps.products.models import Product
+        from apps.routes.models import DriverExpense, DriverShift, Driver, Route
+        from apps.reports.models import DailyClosing
+        from apps.accounts.models import StaffPayout, StaffAttendance, StaffMember, User, DeviceSession
+        from django.contrib.admin.models import LogEntry
+        from django.db import transaction, models
+        from apps.common.audit import log_activity
+
+        settings_obj = SystemSettings.get_settings()
+        pin = str(request.data.get("pin") or "").strip()
+        confirmation = str(request.data.get("confirmation") or "").strip()
+
+        # Check PIN
+        valid_pin = getattr(settings_obj, "settings_pin_code", "7667")
+        if pin != valid_pin and not user.check_password(pin):
+            return Response(
+                {"error": "Invalid security PIN. Please enter your valid 4-digit Owner PIN code."},
+                status=400
+            )
+
+        # Check Confirmation text
+        if confirmation.upper() != "CLEAR ALL DATA":
+            return Response(
+                {"error": "Please type 'CLEAR ALL DATA' to confirm this irreversible action."},
+                status=400
+            )
+
+        deleted_counts = {}
+        with transaction.atomic():
+            # 1. Financial & Operational transactions
+            deleted_counts["credit_transactions"] = CreditTransaction.objects.all().delete()[0]
+            deleted_counts["payments"] = Payment.objects.all().delete()[0]
+            deleted_counts["deliveries"] = Delivery.objects.all().delete()[0]
+
+            # 2. Orders & Order items
+            deleted_counts["order_items"] = OrderItem.objects.all().delete()[0]
+            deleted_counts["order_activity_logs"] = OrderActivityLog.objects.all().delete()[0]
+            deleted_counts["orders"] = Order.objects.all().delete()[0]
+
+            # 3. Customer documents & custom prices & customers
+            deleted_counts["customer_documents"] = CustomerDocument.objects.all().delete()[0]
+            deleted_counts["customer_product_prices"] = CustomerProductPrice.objects.all().delete()[0]
+            deleted_counts["whatsapp_messages"] = WhatsAppMessage.objects.all().delete()[0]
+            deleted_counts["whatsapp_conversations"] = WhatsAppConversation.objects.all().delete()[0]
+            deleted_counts["whatsapp_customers"] = WhatsAppCustomer.objects.all().delete()[0]
+            deleted_counts["whatsapp_accounts"] = WhatsAppAccount.objects.all().delete()[0]
+            deleted_counts["customers"] = Customer.objects.all().delete()[0]
+
+            # 4. Products
+            deleted_counts["products"] = Product.objects.all().delete()[0]
+
+            # 5. Routes & Shifts & Drivers
+            deleted_counts["driver_expenses"] = DriverExpense.objects.all().delete()[0]
+            deleted_counts["driver_shifts"] = DriverShift.objects.all().delete()[0]
+            deleted_counts["drivers"] = Driver.objects.all().delete()[0]
+            deleted_counts["routes"] = Route.objects.all().delete()[0]
+
+            # 6. Reports & Closings
+            deleted_counts["daily_closings"] = DailyClosing.objects.all().delete()[0]
+
+            # 7. Staff & Payouts & Attendance
+            deleted_counts["staff_payouts"] = StaffPayout.objects.all().delete()[0]
+            deleted_counts["staff_attendances"] = StaffAttendance.objects.all().delete()[0]
+            deleted_counts["staff_members"] = StaffMember.objects.all().delete()[0]
+
+            # 8. Business Compliance Documents
+            deleted_counts["business_documents"] = BusinessDocument.objects.all().delete()[0]
+
+            # 9. Clean non-admin/non-owner device sessions and users
+            DeviceSession.objects.exclude(user__role="OWNER").exclude(user__is_superuser=True).delete()
+
+            non_admin_users = User.objects.exclude(role="OWNER").exclude(is_superuser=True)
+            non_admin_count = non_admin_users.count()
+            non_admin_users.delete()
+            deleted_counts["non_admin_users"] = non_admin_count
+
+            # Kept admin / owner accounts
+            admin_users = list(
+                User.objects.filter(
+                    models.Q(role="OWNER") | models.Q(is_superuser=True)
+                ).values_list("username", flat=True)
+            )
+
+            # 10. Audit Logs & Admin Log entries
+            ActivityLog.objects.all().delete()
+            LogEntry.objects.all().delete()
+
+            # Record clear-all event as the first entry in fresh ActivityLog
+            log_activity(
+                user=user,
+                action="DELETED",
+                entity_type="SYSTEM_SETTING",
+                entity_id="clear_all_data",
+                entity_name="Database Master Reset",
+                summary=f"Full data clear executed by Owner {user.username}. All business data was removed. Admin/Owner accounts ({', '.join(admin_users)}) were preserved.",
+                details={"deleted_counts": deleted_counts, "preserved_users": admin_users},
+            )
+
+        total_deleted = sum(deleted_counts.values())
+
+        return Response({
+            "success": True,
+            "message": f"Successfully cleared all data. {total_deleted} records removed. Only Admin and Owner accounts ({', '.join(admin_users)}) are preserved.",
+            "deleted_counts": deleted_counts,
+            "total_deleted": total_deleted,
+            "preserved_users": admin_users,
+            "cleared_at": timezone.now().isoformat(),
+        })
 
