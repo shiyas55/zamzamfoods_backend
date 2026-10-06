@@ -767,8 +767,15 @@ class DailyFinancialSummaryView(APIView):
         exp_qs = DriverExpense.objects.filter(date__gte=start_date, date__lte=end_date)
         driver_expenses = exp_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
 
-        # Net Collection = Collections - Driver Expenses
-        net_collection = total_collected - driver_expenses
+        # Staff Payouts (Wages & Advances via Attendance or Payouts)
+        from apps.accounts.models import StaffPayout
+        payout_qs = StaffPayout.objects.filter(date__gte=start_date, date__lte=end_date)
+        staff_cash_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.CASH).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        staff_gpay_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.GPAY_UPI).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        total_staff_payouts = staff_cash_paid + staff_gpay_paid
+
+        # Net Collection = Collections - Driver Expenses - Staff Payouts
+        net_collection = total_collected - driver_expenses - total_staff_payouts
 
         # Credit generated from credit sales in period
         credit_sales = CreditTransaction.objects.filter(
@@ -793,6 +800,9 @@ class DailyFinancialSummaryView(APIView):
             "previous_credit_collected": previous_credit_collected,
             "credit_generated": credit_sales,
             "driver_expenses": driver_expenses,
+            "staff_cash_paid": staff_cash_paid,
+            "staff_gpay_paid": staff_gpay_paid,
+            "total_staff_payouts": total_staff_payouts,
             "net_collection": net_collection,
             "total_receivable": total_receivable,
         })
@@ -834,9 +844,16 @@ class DailyClosingView(APIView):
         today_order_collected = payments_qs.filter(order__isnull=False).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
         previous_credit_collected = payments_qs.filter(order__isnull=True).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
 
+        # Staff Payouts (Wages & Advances)
+        from apps.accounts.models import StaffPayout
+        payout_qs = StaffPayout.objects.filter(date=target_date)
+        staff_cash_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.CASH).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        staff_gpay_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.GPAY_UPI).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        total_staff_payouts = staff_cash_paid + staff_gpay_paid
+
         expenses_qs = DriverExpense.objects.filter(date=target_date)
         driver_expenses = expenses_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-        net_collection = total_collected - driver_expenses
+        net_collection = total_collected - driver_expenses - total_staff_payouts
 
         # Credit generated
         credit_generated = CreditTransaction.objects.filter(
@@ -892,7 +909,7 @@ class DailyClosingView(APIView):
                     }
                 }
 
-        expected_cash_in_hand = opening_cash + cash_collected - driver_expenses
+        expected_cash_in_hand = opening_cash + cash_collected - driver_expenses - staff_cash_paid
 
         return Response({
             "date": str(target_date),
@@ -913,6 +930,9 @@ class DailyClosingView(APIView):
                 "today_order_collected": str(today_order_collected),
                 "previous_credit_collected": str(previous_credit_collected),
                 "driver_expenses": str(driver_expenses),
+                "staff_cash_paid": str(staff_cash_paid),
+                "staff_gpay_paid": str(staff_gpay_paid),
+                "total_staff_payouts": str(total_staff_payouts),
                 "net_collection": str(net_collection),
                 "total_deliveries": total_deliveries,
                 "delivered_count": delivered_count,
@@ -955,9 +975,16 @@ class DailyClosingView(APIView):
 
         previous_credit_collected = payments_qs.filter(order__isnull=True).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
 
+        # Staff Payouts (Wages & Advances)
+        from apps.accounts.models import StaffPayout
+        payout_qs = StaffPayout.objects.filter(date=target_date)
+        staff_cash_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.CASH).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        staff_gpay_paid = payout_qs.filter(payment_method=StaffPayout.PaymentMethod.GPAY_UPI).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        total_staff_payouts = staff_cash_paid + staff_gpay_paid
+
         expenses_qs = DriverExpense.objects.filter(date=target_date)
         driver_expenses = expenses_qs.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-        net_collection = total_collected - driver_expenses
+        net_collection = total_collected - driver_expenses - total_staff_payouts
 
         credit_generated = CreditTransaction.objects.filter(
             transaction_type=CreditTransaction.TransactionType.CREDIT_SALE,
