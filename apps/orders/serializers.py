@@ -101,6 +101,14 @@ class OrderSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_previous_balance(self, obj):
+        try:
+            from apps.customers.services import get_customers_opening_balances_for_date
+            balances = get_customers_opening_balances_for_date(target_date=obj.order_date, customer_ids=[obj.customer_id])
+            if str(obj.customer_id) in balances:
+                return balances[str(obj.customer_id)]
+        except Exception:
+            pass
+
         has_prefetched = hasattr(obj, "_prefetched_objects_cache") and "credit_ledger_entries" in obj._prefetched_objects_cache
         if has_prefetched:
             tx = next((t for t in obj.credit_ledger_entries.all() if t.transaction_type == "CREDIT_SALE"), None)
@@ -182,7 +190,12 @@ class CreateOrderSerializer(serializers.Serializer):
     def validate(self, attrs):
         order_date = attrs.get("order_date")
         if not order_date:
-            order_date = timezone.localdate()
+            try:
+                import zoneinfo
+                kolkata_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+                order_date = timezone.now().astimezone(kolkata_tz).date()
+            except Exception:
+                order_date = timezone.localdate()
         attrs["order_date"] = order_date
 
         source = attrs.get("source", "MANAGER")
