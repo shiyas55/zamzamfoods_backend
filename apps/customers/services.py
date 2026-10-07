@@ -97,3 +97,90 @@ def set_customer_product_price(customer=None, product=None, price=None, effectiv
         )
 
     return new_price
+
+
+def get_customers_opening_balances_for_date(target_date, customer_ids=None):
+    """
+    Computes opening receivable due for customers at the START of target_date
+    (i.e. the balance owed BEFORE that day's orders, payments, and adjustments).
+
+    Formula:
+        Opening Balance at start of Date D =
+            customer.current_balance
+            - Sum(Orders where order_date >= D and status != CANCELLED)
+            + Sum(Payments where received_at__date >= D and status = COMPLETED)
+            - Sum(Standalone Credit Adjustments where created_at__date >= D
+                  and reference_order IS NULL)
+
+    NOTE: ADJUSTMENT transactions that have a reference_order (legacy order-edit
+    adjustments created before the in-place CREDIT_SALE update approach) are
+    intentionally excluded. The order's CREDIT_SALE entry already reflects the
+    current total, so reversing those order-linked adjustments would double-subtract
+    the order-edit delta and produce an incorrect Prev. Due.
+
+    Returns: dict { str(customer_id): str(opening_balance_decimal_formatted) }
+    """
+    import datetime
+    from django.db.models import Sum
+    from apps.orders.models import Order
+    from apps.payments.models import Payment
+    from apps.credits.models import CreditTransaction
+
+    if isinstance(target_date, str):
+        target_date = datetime.date.fromisoformat(str(target_date).strip()[:10])
+
+    customers_qs = Customer.objects.filter(is_active=True)
+    if customer_ids:
+        customers_qs = customers_qs.filter(id__in=customer_ids)
+
+    cust_map = {str(c.id): c.current_balance for c in customers_qs}
+
+    orders_agg = (
+        Order.objects.filter(order_date__gte=target_date)
+        .exclude(status=Order.Status.CANCELLED)
+    )
+    if customer_ids:
+        orders_agg = orders_agg.filter(customer_id__in=customer_ids)
+    orders_by_cust = {
+        str(row["customer_id"]): (row["total"] or Decimal("0.00"))
+        for row in orders_agg.values("customer_id").annotate(total=Sum("total_amount"))
+    }
+
+    payments_agg = (
+        Payment.objects.filter(received_at__date__gte=target_date, status=Payment.Status.COMPLETED)
+    )
+    if customer_ids:
+        payments_agg = payments_agg.filter(customer_id__in=customer_ids)
+    payments_by_cust = {
+        str(row["customer_id"]): (row["total"] or Decimal("0.00"))
+        for row in payments_agg.values("customer_id").annotate(total=Sum("amount"))
+    }
+
+    # Only include legitimate STANDALONE adjustments (reference_order IS NULL).
+    # Order-edit adjustments (reference_order IS NOT NULL) and legacy Fast Wholesale Entry
+    # balance overrides must be excluded to prevent distorting historical balances.
+    adjustments_agg = (
+        CreditTransaction.objects.filter(
+            transaction_type=CreditTransaction.TransactionType.ADJUSTMENT,
+            created_at__date__gte=target_date,
+            reference_order__isnull=True,  # standalone balance corrections only
+        ).exclude(notes__icontains="Fast Wholesale Entry")
+    )
+    if customer_ids:
+        adjustments_agg = adjustments_agg.filter(customer_id__in=customer_ids)
+    adjustments_by_cust = {
+        str(row["customer_id"]): (row["total"] or Decimal("0.00"))
+        for row in adjustments_agg.values("customer_id").annotate(total=Sum("amount"))
+    }
+
+    results = {}
+    for cid, cur_bal in cust_map.items():
+        subsequent_orders = orders_by_cust.get(cid, Decimal("0.00"))
+        subsequent_payments = payments_by_cust.get(cid, Decimal("0.00"))
+        subsequent_adjs = adjustments_by_cust.get(cid, Decimal("0.00"))
+
+        opening_due = cur_bal - subsequent_orders + subsequent_payments - subsequent_adjs
+        results[cid] = str(opening_due.quantize(Decimal("0.01")))
+
+    return results
+

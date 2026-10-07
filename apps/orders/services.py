@@ -7,12 +7,32 @@ from apps.products.models import Product
 from apps.routes.models import Driver
 from .models import Order, OrderItem, OrderActivityLog
 
-def generate_order_number(order_date=None):
-    """Generates unique sequential order number for given order_date (defaults to today)."""
+def get_business_date_kolkata(order_date=None):
+    """
+    Returns datetime.date representing the business date strictly in Asia/Kolkata timezone.
+    """
     if order_date is None:
-        order_date = timezone.localdate()
+        try:
+            import zoneinfo
+            kolkata_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            return timezone.now().astimezone(kolkata_tz).date()
+        except Exception:
+            return timezone.localdate()
     elif isinstance(order_date, str):
-        order_date = datetime.date.fromisoformat(order_date)
+        return datetime.date.fromisoformat(str(order_date).strip()[:10])
+    elif isinstance(order_date, datetime.datetime):
+        try:
+            import zoneinfo
+            kolkata_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+            return order_date.astimezone(kolkata_tz).date()
+        except Exception:
+            return order_date.date()
+    return order_date
+
+
+def generate_order_number(order_date=None):
+    """Generates unique sequential order number strictly tied to the order's business date."""
+    order_date = get_business_date_kolkata(order_date)
     date_str = order_date.strftime("%Y%m%d")
     count = Order.objects.filter(order_number__startswith=f"ORD-{date_str}").count() + 1
     order_num = f"ORD-{date_str}-{count:04d}"
@@ -32,10 +52,8 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=_UN
     if not items_data:
         raise ValueError("At least one order item is required.")
 
-    if order_date is None:
-        order_date = timezone.localdate()
-    elif isinstance(order_date, str):
-        order_date = datetime.date.fromisoformat(order_date)
+    order_date = get_business_date_kolkata(order_date)
+    date_str = order_date.strftime("%Y%m%d")
 
     with transaction.atomic():
         customer = Customer.objects.select_for_update().get(id=customer_id)
@@ -47,10 +65,25 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=_UN
         elif driver_id is _UNSET and route:
             driver = route.drivers.filter(is_active=True).first()
 
-        if not order_number or not str(order_number).strip():
+        clean_order_num = str(order_number).strip() if order_number else ""
+        if not clean_order_num:
             order_number = generate_order_number(order_date=order_date)
         else:
-            order_number = str(order_number).strip()
+            # Canonical normalization:
+            # 1. Plain sequence digits e.g. "22" or "0022" -> "ORD-YYYYMMDD-0022"
+            if clean_order_num.isdigit():
+                seq_val = int(clean_order_num)
+                order_number = f"ORD-{date_str}-{seq_val:04d}"
+            # 2. Existing "ORD-" prefix: ensure date segment matches the order's business date
+            elif clean_order_num.startswith("ORD-"):
+                parts = clean_order_num.split("-")
+                if len(parts) >= 3 and parts[1] != date_str:
+                    order_number = f"ORD-{date_str}-{parts[2]}"
+                else:
+                    order_number = clean_order_num
+            else:
+                order_number = clean_order_num
+
             if Order.objects.filter(order_number=order_number).exists():
                 order_number = f"{order_number}-{generate_order_number(order_date=order_date).split('-')[-1]}"
 
@@ -292,7 +325,13 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
         order.status = Order.Status.LOCKED
         order.save()
 
-        # Dynamically synchronize customer credit balance with order change
+        # Synchronize customer credit balance with order total change.
+        # IMPORTANT: We update the existing CREDIT_SALE ledger entry in-place
+        # rather than creating a new ADJUSTMENT transaction.
+        # Creating an ADJUSTMENT would distort get_customers_opening_balances_for_date()
+        # for the order's date and all prior dates, because that formula subtracts
+        # all ADJUSTMENT transactions with created_at >= target_date.
+        # Updating the CREDIT_SALE in-place keeps one clean ledger entry per order.
         delta = (order.total_amount - old_total).quantize(Decimal("0.01"))
         if delta != Decimal("0.00") and order.status != Order.Status.CANCELLED:
             from apps.credits.models import CreditTransaction
@@ -306,15 +345,16 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
                 new_balance = (customer.current_balance + delta).quantize(Decimal("0.01"))
                 customer.current_balance = new_balance
                 customer.save(update_fields=["current_balance", "updated_at"])
-                CreditTransaction.objects.create(
-                    customer=customer,
-                    transaction_type=CreditTransaction.TransactionType.ADJUSTMENT,
-                    amount=delta,
-                    balance_after=new_balance,
-                    reference_order=order,
-                    notes=f"Order #{order.order_number} modified from ₹{old_total} to ₹{order.total_amount}",
-                    recorded_by=user,
+                # Update the CREDIT_SALE entry in-place: amount = new total, adjust balance_after
+                new_sale_amount = (sale_tx.amount + delta).quantize(Decimal("0.01"))
+                new_sale_balance_after = (sale_tx.balance_after + delta).quantize(Decimal("0.01"))
+                sale_tx.amount = new_sale_amount
+                sale_tx.balance_after = new_sale_balance_after
+                sale_tx.notes = (
+                    f"Credit sale for order #{order.order_number} "
+                    f"(last edited: ₹{old_total} → ₹{order.total_amount})"
                 )
+                sale_tx.save(update_fields=["amount", "balance_after", "notes"])
             else:
                 record_credit_sale_service(order=order, recorded_by=user)
 

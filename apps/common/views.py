@@ -928,6 +928,10 @@ class DatabaseRestoreView(APIView):
 
                         for stmt in valid_stmts:
                             stmt_upper = stmt.strip().upper()
+                            # Skip transaction management statements since we are already inside transaction.atomic()
+                            if stmt_upper.rstrip(";") in ["BEGIN", "COMMIT", "ROLLBACK", "END", "START TRANSACTION"]:
+                                skipped_count += 1
+                                continue
                             # Skip SQLite PRAGMA commands if restoring to PostgreSQL
                             if connection.vendor == "postgresql" and stmt_upper.startswith("PRAGMA"):
                                 skipped_count += 1

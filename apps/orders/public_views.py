@@ -1,5 +1,6 @@
 from rest_framework import views, status
 from rest_framework.response import Response
+from django.utils import timezone
 from apps.customers.models import Customer
 from apps.products.models import Product
 from apps.orders.serializers import CreateOrderSerializer
@@ -112,6 +113,13 @@ class PublicCustomerOrderView(views.APIView):
         data["entered_by_role"] = "CUSTOMER"
         data["entered_by_name"] = customer.name
         data["entered_by_type"] = "CUSTOMER"
+        if not data.get("order_date"):
+            try:
+                import zoneinfo
+                kolkata_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+                data["order_date"] = timezone.now().astimezone(kolkata_tz).date().isoformat()
+            except Exception:
+                data["order_date"] = timezone.localdate().isoformat()
 
         serializer = CreateOrderSerializer(data=data, context={"request": None})
         if serializer.is_valid():

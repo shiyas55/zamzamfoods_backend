@@ -286,11 +286,13 @@ class CustomerViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="set-balance", permission_classes=[IsManagerOrOwner])
     def set_balance(self, request, pk=None):
         """
-        Directly sets the customer's current balance / previous due from Fast Order Entry.
-        Creates an audit ledger adjustment record and updates current_balance in DB.
+        Sets the customer's opening balance / previous due for a specific business date.
+        Calculates delta against that date's opening balance and timestamps the adjustment
+        to target_date so past dates (e.g. Oct 1) are never affected.
         """
         customer = self.get_object()
         balance_raw = request.data.get("balance")
+        target_date_raw = request.data.get("date") or request.data.get("target_date")
         if balance_raw is None:
             return Response({"detail": "balance field is required."}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -300,21 +302,61 @@ class CustomerViewSet(viewsets.ModelViewSet):
         except Exception:
             return Response({"detail": "Invalid balance format."}, status=status.HTTP_400_BAD_REQUEST)
 
-        from apps.credits.services import record_adjustment_service
-        delta = (new_balance - customer.current_balance).quantize(Decimal("0.01"))
+        import datetime
+        from django.utils import timezone
+        import zoneinfo
+
+        kolkata_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+        if target_date_raw:
+            try:
+                target_date = datetime.date.fromisoformat(str(target_date_raw)[:10])
+            except Exception:
+                target_date = timezone.now().astimezone(kolkata_tz).date()
+        else:
+            target_date = timezone.now().astimezone(kolkata_tz).date()
+
+        from .services import get_customers_opening_balances_for_date
+        current_opening_balances = get_customers_opening_balances_for_date(target_date=target_date, customer_ids=[customer.id])
+        current_opening = Decimal(current_opening_balances.get(str(customer.id), str(customer.current_balance)))
+
+        delta = (new_balance - current_opening).quantize(Decimal("0.01"))
         if delta != Decimal("0.00"):
-            record_adjustment_service(
+            from apps.credits.services import record_adjustment_service
+            # Create adjustment timestamped to target_date at 00:00:01 IST
+            adj_dt = datetime.datetime.combine(target_date, datetime.time(0, 0, 1))
+            adj_time = timezone.make_aware(adj_dt, kolkata_tz)
+
+            tx = record_adjustment_service(
                 customer_id=customer.id,
                 amount=delta,
-                notes=request.data.get("notes") or f"Previous due set to ₹{new_balance} from Fast Wholesale Entry",
+                notes=request.data.get("notes") or f"Previous due on {target_date} set to ₹{new_balance} from Fast Wholesale Entry",
                 recorded_by=request.user,
             )
+            # Ensure adjustment timestamp is precisely target_date so historical days prior to target_date are unaffected
+            tx.created_at = adj_time
+            tx.save(update_fields=["created_at"])
+
         customer.refresh_from_db()
         return Response({
             "id": str(customer.id),
             "name": customer.name,
             "current_balance": str(customer.current_balance),
+            "target_date": target_date.isoformat(),
+            "opening_balance": str(new_balance),
         }, status=status.HTTP_200_OK)
+
+    @extend_schema(responses={200: drf_serializers.DictField()})
+    @action(detail=False, methods=["get"], url_path="balances-for-date")
+    def balances_for_date(self, request):
+        """
+        Returns true historical opening receivable balance for all customers at the START of a given business date.
+        """
+        date_param = request.query_params.get("date")
+        if not date_param:
+            date_param = timezone.localdate().isoformat()
+        from .services import get_customers_opening_balances_for_date
+        balances = get_customers_opening_balances_for_date(target_date=date_param)
+        return Response(balances, status=status.HTTP_200_OK)
 
 
 class CustomerProductPriceViewSet(viewsets.ModelViewSet):
