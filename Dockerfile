@@ -38,8 +38,8 @@ COPY . .
 # Koyeb injects these at build time OR you can use --env-file.
 # We use a dummy secret here solely for collectstatic — the real one is injected at runtime.
 RUN DJANGO_SECRET_KEY="collectstatic-dummy-key-not-used-at-runtime" \
-    DJANGO_ALLOWED_HOSTS="localhost" \
-    DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" \
+    DJANGO_ALLOWED_HOSTS="*" \
+    DATABASE_URL="sqlite:////tmp/dummy_build.sqlite3" \
     python manage.py collectstatic --noinput
 
 # ── Expose port ───────────────────────────────────────────────────────────────

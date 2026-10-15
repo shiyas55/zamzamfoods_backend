@@ -30,10 +30,22 @@ for h in _default_hosts:
         ALLOWED_HOSTS.append(h)
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# PostgreSQL via DATABASE_URL
-DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "").strip() or os.environ.get("AIVEN_DATABASE_URL", "").strip()
+# PostgreSQL via DATABASE_URL or AIVEN_DATABASE_URL environment variable
+DATABASE_URL_ENV = (
+    os.environ.get("DATABASE_URL", "").strip()
+    or os.environ.get("AIVEN_DATABASE_URL", "").strip()
+)
 if not DATABASE_URL_ENV:
-    raise ValueError("DATABASE_URL must be configured in environment variables.")
+    _env_file = BASE_DIR / ".env"
+    if _env_file.exists():
+        with open(_env_file, "r") as f:
+            for line in f:
+                if line.startswith("DATABASE_URL="):
+                    DATABASE_URL_ENV = line.split("=", 1)[1].strip()
+                    break
+
+if not DATABASE_URL_ENV:
+    raise ValueError("DATABASE_URL must be configured in environment variables or .env file.")
 
 # Internal network host (localhost, 127.0.0.1, internal network) does not use SSL;
 # external remote hosts require SSL.
