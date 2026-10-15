@@ -63,8 +63,23 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 CORS_ALLOWED_ORIGINS += [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
     "https://shiyass-macbook-air.tail4ef336.ts.net",
     "http://shiyass-macbook-air.tail4ef336.ts.net",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https?://localhost(:[0-9]+)?$",
+    r"^https?://127\.0\.0\.1(:[0-9]+)?$",
+    r"^tauri://.*$",
+    r"^https?://tauri\.localhost$",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
@@ -77,6 +92,15 @@ CSRF_TRUSTED_ORIGINS = [
     if origin.strip()
 ]
 CSRF_TRUSTED_ORIGINS += [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
     "https://shiyass-macbook-air.tail4ef336.ts.net",
     "http://shiyass-macbook-air.tail4ef336.ts.net",
 ]
