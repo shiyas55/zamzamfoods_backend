@@ -5,7 +5,7 @@
 set -e
 
 echo ">>> Running database migrations..."
-python manage.py migrate --noinput
+python manage.py migrate --noinput || echo ">>> WARNING: Database migrations failed or timed out, continuing server startup..."
 
 echo ">>> Creating superuser if not exists..."
 python manage.py shell -c "
@@ -22,7 +22,7 @@ if not User.objects.filter(username=username).exists():
     print(f'Superuser \"{username}\" created.')
 else:
     print(f'Superuser \"{username}\" already exists, skipping.')
-"
+" || echo ">>> WARNING: Superuser verification skipped."
 
 echo ">>> Starting Gunicorn on port ${PORT:-8000}..."
 exec gunicorn config.wsgi:application \
