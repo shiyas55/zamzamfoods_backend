@@ -19,8 +19,11 @@ ALLOWED_HOSTS = [
 _default_hosts = [
     "zamzamfood.up.railway.app",
     "zamzamfoods.up.railway.app",
+    ".up.railway.app",
+    ".railway.app",
     "localhost",
     "127.0.0.1",
+    "*",
 ]
 for h in _default_hosts:
     if h not in ALLOWED_HOSTS:
@@ -28,10 +31,9 @@ for h in _default_hosts:
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 # PostgreSQL via DATABASE_URL
-# Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
-DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "")
+DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "").strip() or os.environ.get("AIVEN_DATABASE_URL", "").strip()
 if not DATABASE_URL_ENV:
-    raise ValueError("DATABASE_URL must be set in production.")
+    raise ValueError("DATABASE_URL must be configured in environment variables.")
 
 # Internal network host (localhost, 127.0.0.1, internal network) does not use SSL;
 # external remote hosts require SSL.
