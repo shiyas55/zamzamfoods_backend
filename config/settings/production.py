@@ -27,14 +27,14 @@ for h in _default_hosts:
         ALLOWED_HOSTS.append(h)
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# Supabase PostgreSQL via DATABASE_URL
+# PostgreSQL via DATABASE_URL
 # Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
 DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "")
 if not DATABASE_URL_ENV:
     raise ValueError("DATABASE_URL must be set in production.")
 
-# Internal Railway network host (postgres.railway.internal or localhost) does not use SSL;
-# external hosts like Supabase (*.supabase.co / pooler.supabase.com) require SSL.
+# Internal network host (localhost, 127.0.0.1, internal network) does not use SSL;
+# external remote hosts require SSL.
 _is_internal_db = any(h in DATABASE_URL_ENV for h in ["railway.internal", "localhost", "127.0.0.1"])
 _ssl_require = not _is_internal_db
 

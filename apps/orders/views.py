@@ -67,25 +67,32 @@ class OrderViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        order = serializer.save()
-        output_serializer = OrderSerializer(order)
-        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+        try:
+            order = serializer.save()
+            output_serializer = OrderSerializer(order)
+            return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        order = serializer.save()
-        output_serializer = OrderSerializer(order)
-        return Response(output_serializer.data, status=status.HTTP_200_OK)
+        try:
+            order = serializer.save()
+            output_serializer = OrderSerializer(order)
+            return Response(output_serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         user = request.user
-        if not (user.is_superuser or user.role == "OWNER"):
-            if instance.status in [Order.Status.LOCKED, Order.Status.BILLING, Order.Status.DELIVERY_CREATED, Order.Status.COMPLETED, Order.Status.DELIVERED]:
-                raise PermissionDenied(f"Cannot delete order because its status is {instance.get_status_display()}.")
+        user_role = getattr(user, "role", "")
+        is_authorized = user and (user.is_superuser or user_role in ["OWNER", "MANAGER"])
+        if not is_authorized:
+            raise PermissionDenied("You do not have permission to delete orders.")
         return super().destroy(request, *args, **kwargs)
 
     def perform_destroy(self, instance):

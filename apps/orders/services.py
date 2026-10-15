@@ -218,24 +218,49 @@ def create_order_service(customer_id, items_data, order_date=None, driver_id=_UN
     return order
 
 
-def update_order_service(order_id, items_data=None, driver_id=None, route_id=None, notes=None, user=None, shop_expense=None, shop_expense_notes=None):
+def update_order_service(
+    order_id,
+    items_data=None,
+    driver_id=None,
+    route_id=None,
+    notes=None,
+    user=None,
+    shop_expense=None,
+    shop_expense_notes=None,
+    customer_id=None,
+    order_date=None,
+    order_number=None,
+):
     """
     Safely edits an order. 
-    Orders that are SUBMITTED or LOCKED cannot be edited unless reopened.
+    Owners have full authority to correct bills and line items.
     """
     with transaction.atomic():
-        order = Order.objects.select_for_update().select_related("customer", "route", "driver").get(id=order_id)
+        order = Order.objects.select_for_update().select_related("customer", "route").get(id=order_id)
 
         from apps.deliveries.models import Delivery
 
-        if order.status in [Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED]:
-            raise ValueError(f"Cannot edit order #{order.order_number} because its status is already {order.get_status_display()}.")
+        is_owner = not user or user.is_superuser or getattr(user, "role", "") in ["OWNER", "MANAGER"]
 
-        if hasattr(order, "delivery") and order.delivery and order.delivery.status == Delivery.Status.DELIVERED:
-            raise ValueError(f"Cannot edit order #{order.order_number} because the delivery is already Delivered.")
+        if order.status == Order.Status.CANCELLED:
+            raise ValueError(f"Cannot edit order #{order.order_number} because its status is Cancelled.")
+
+        if not is_owner:
+            if order.status in [Order.Status.DELIVERED, Order.Status.COMPLETED]:
+                raise ValueError(f"Cannot edit order #{order.order_number} because its status is already {order.get_status_display()}.")
+
+            if hasattr(order, "delivery") and order.delivery and order.delivery.status == Delivery.Status.DELIVERED:
+                raise ValueError(f"Cannot edit order #{order.order_number} because the delivery is already Delivered.")
 
         old_total = order.total_amount
         old_driver = order.driver.user.get_full_name() if (order.driver and order.driver.user) else "Unassigned"
+
+        if customer_id is not None:
+            order.customer_id = customer_id
+        if order_date is not None:
+            order.order_date = order_date
+        if order_number is not None and str(order_number).strip():
+            order.order_number = str(order_number).strip()
 
         if route_id is not None:
             from apps.routes.models import Route
@@ -245,15 +270,19 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
 
         if driver_id is not None:
             if driver_id:
-                driver = Driver.objects.get(id=driver_id)
-                order.driver = driver
-                order.save(update_fields=["driver", "updated_at"])
+                driver = Driver.objects.filter(id=driver_id).first()
+                if not driver:
+                    # Check if driver_id was passed as user_id
+                    driver = Driver.objects.filter(user_id=driver_id).first()
+                if driver:
+                    order.driver = driver
+                    order.save(update_fields=["driver", "updated_at"])
+                    if hasattr(order, "delivery") and order.delivery:
+                        order.delivery.driver = driver
+                        order.delivery.save(update_fields=["driver", "updated_at"])
             else:
                 order.driver = None
                 order.save(update_fields=["driver", "updated_at"])
-                if hasattr(order, "delivery") and order.delivery:
-                    order.delivery.driver = None
-                    order.delivery.save(update_fields=["driver", "updated_at"])
 
         from apps.deliveries.services import ensure_order_delivery
         if order.driver or (order.route and order.route.drivers.filter(is_active=True).exists()):
@@ -296,11 +325,7 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
                 from apps.customers.services import get_effective_product_price
                 effective_price, has_custom, _ = get_effective_product_price(order.customer, product)
                 if "unit_price" in item and item["unit_price"] is not None and str(item["unit_price"]).strip() != "":
-                    sent_price = Decimal(str(item["unit_price"]))
-                    if has_custom and sent_price == product.unit_price:
-                        unit_price = effective_price
-                    else:
-                        unit_price = sent_price
+                    unit_price = Decimal(str(item["unit_price"])).quantize(Decimal("0.01"))
                 else:
                     unit_price = effective_price
 
@@ -321,8 +346,9 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
             items_sum = sum(item.subtotal for item in order.items.all())
             order.total_amount = max(Decimal("0.00"), items_sum - order.shop_expense).quantize(Decimal("0.01"))
 
-        # Re-lock if edited by manager/owner
-        order.status = Order.Status.LOCKED
+        # Re-lock if not already delivered/completed
+        if order.status not in [Order.Status.DELIVERED, Order.Status.COMPLETED]:
+            order.status = Order.Status.LOCKED
         order.save()
 
         # Synchronize customer credit balance with order total change.
@@ -359,8 +385,11 @@ def update_order_service(order_id, items_data=None, driver_id=None, route_id=Non
                 record_credit_sale_service(order=order, recorded_by=user)
 
         # Audit log
-        user_name = user.get_full_name() or user.username if user else "System"
-        user_role = user.role if user else "SYSTEM"
+        user_name = "System"
+        user_role = "SYSTEM"
+        if user and getattr(user, "is_authenticated", False):
+            user_name = user.get_full_name() or user.username or "Staff"
+            user_role = getattr(user, "role", "MANAGER")
         OrderActivityLog.objects.create(
             order=order,
             action="Order Edited & Locked",

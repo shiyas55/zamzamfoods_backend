@@ -48,15 +48,16 @@ def custom_exception_handler(exc, context):
             },
         }
     else:
-        # Unexpected internal error: Log without exposing internal details
+        # Unexpected internal error: Log and expose exact error details
         logger.exception("Unhandled server exception: %s", exc, exc_info=context.get("request"))
+        err_msg = str(exc) if str(exc) else f"{exc.__class__.__name__} occurred"
         response = Response(
             {
                 "success": False,
                 "error": {
-                    "type": "InternalServerError",
-                    "message": "A server error occurred. Please contact the administrator.",
-                    "details": None,
+                    "type": exc.__class__.__name__,
+                    "message": f"{exc.__class__.__name__}: {err_msg}",
+                    "details": err_msg,
                 },
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -246,10 +246,7 @@ class DatabaseStatsView(APIView):
             if db_path and os.path.exists(str(db_path)):
                 total_size_bytes = os.path.getsize(str(db_path))
 
-        # Supabase PostgreSQL Storage Quota: 500 MB (Free tier limit)
-        storage_quota_bytes = 500 * 1024 * 1024
-        usage_pct = min(100.0, round((total_size_bytes / storage_quota_bytes) * 100, 2))
-
+        # Local PostgreSQL Storage (Local Disk)
         if total_size_bytes < 1024:
             size_formatted = f"{total_size_bytes} B"
         elif total_size_bytes < 1024 * 1024:
@@ -295,37 +292,127 @@ class DatabaseStatsView(APIView):
 
         status_label = "healthy"
         alert_message = None
-        if usage_pct >= 95 or total_size_bytes >= 475 * 1024 * 1024:
-            status_label = "critical"
-            alert_message = f"CRITICAL: Database storage is FULL ({size_formatted} of 500 MB). Supabase enforces read-only mode at 500 MB, which will block new orders and logins. Please download a database backup immediately and prune old audit logs or upgrade your Supabase tier."
-        elif usage_pct >= 80 or total_size_bytes >= 400 * 1024 * 1024:
-            status_label = "warning"
-            alert_message = f"WARNING: Database storage has reached {usage_pct}% ({size_formatted} of 500 MB). When 500 MB is reached, Supabase restricts write access. Please generate a backup and archive old records soon."
 
-        supabase_rest_url = os.environ.get("SUPABASE_REST_URL", "https://mfrakyarmmnvsvzlyota.supabase.co/rest/v1/")
+        db_settings = settings.DATABASES.get("default", {})
+        host = db_settings.get("HOST", "localhost") or "localhost"
+        port = str(db_settings.get("PORT", "5432")) or "5432"
+        db_name = db_settings.get("NAME", "zamzam_foods")
+        db_user = db_settings.get("USER", "postgres")
 
-        if db_engine == "postgresql":
-            actual_engine = "SUPABASE POSTGRESQL" if "supabase" in str(connection.settings_dict.get("HOST", "")).lower() else "POSTGRESQL"
+        quota_bytes = 1024 * 1024 * 1024  # 1 GB Aiven Free Plan limit
+        usage_pct = round((total_size_bytes / quota_bytes) * 100, 2) if quota_bytes > 0 else 0.0
+
+        is_aiven = "aivencloud" in str(host)
+        is_cloud = is_aiven or "railway" in str(host) or "supabase" in str(host) or not any(h in str(host) for h in ["localhost", "127.0.0.1"])
+
+        if is_aiven:
+            actual_engine = "AIVEN POSTGRESQL CLOUD"
+        elif is_cloud and db_engine == "postgresql":
+            actual_engine = "CLOUD POSTGRESQL"
+        elif db_engine == "postgresql":
+            actual_engine = "POSTGRESQL"
         elif db_engine == "sqlite":
-            actual_engine = "LOCAL SQLITE"
+            actual_engine = "SQLITE"
         else:
             actual_engine = db_engine.upper()
 
+        status_label = "healthy"
+        alert_message = None
+        if usage_pct >= 90:
+            status_label = "critical"
+            alert_message = f"Critical Storage Alert: Database usage is at {usage_pct}% of the 1 GB quota ({size_formatted} / 1 GB). Review capacity before limit is reached."
+        elif usage_pct >= 80:
+            status_label = "warning"
+            alert_message = f"Storage Warning: Database usage is approaching plan threshold ({usage_pct}% of 1 GB quota)."
+
         return Response({
             "engine": actual_engine,
+            "host": str(host),
+            "port": str(port),
+            "name": str(db_name),
+            "user": str(db_user),
+            "is_connected": True,
             "size_bytes": total_size_bytes,
             "size_formatted": size_formatted,
-            "quota_bytes": storage_quota_bytes,
-            "quota_formatted": "500 MB",
+            "quota_bytes": quota_bytes,
+            "quota_formatted": "1 GB (Aiven Free Plan)",
             "usage_pct": usage_pct,
             "total_records": total_records,
             "table_count": len(breakdown),
             "modules": breakdown,
             "status": status_label,
             "alert_message": alert_message,
-            "supabase_api_url": supabase_rest_url,
             "checked_at": timezone.now().isoformat(),
         })
+
+
+class DatabaseTestConnectionView(APIView):
+    """
+    POST /api/v1/database/test-connection/
+    Tests connection to local PostgreSQL database instance.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not user.is_authenticated or (user.role != "OWNER" and not user.is_superuser):
+            return Response({"error": "Unauthorized. Only the business Owner can test database connection."}, status=403)
+
+        db_settings = settings.DATABASES.get("default", {})
+        default_host = str(db_settings.get("HOST", "") or "")
+        default_port = str(db_settings.get("PORT", "") or "5432")
+        default_name = str(db_settings.get("NAME", "") or "defaultdb")
+        default_user = str(db_settings.get("USER", "") or "avnadmin")
+        default_password = str(db_settings.get("PASSWORD", "") or "")
+
+        host = request.data.get("host") or default_host or "localhost"
+        port_raw = request.data.get("port") or default_port or "5432"
+        try:
+            port = int(port_raw)
+        except (ValueError, TypeError):
+            port = 5432
+        db_name = request.data.get("name") or default_name or "defaultdb"
+        user_name = request.data.get("user") or default_user or "avnadmin"
+        password = request.data.get("password") or default_password or ""
+
+        is_cloud = "aivencloud" in str(host) or "railway" in str(host) or "supabase" in str(host) or not any(h in str(host) for h in ["localhost", "127.0.0.1"])
+        ssl_mode = "require" if is_cloud else "prefer"
+
+        import psycopg2
+        try:
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                dbname=db_name,
+                user=user_name,
+                password=password,
+                sslmode=ssl_mode,
+                connect_timeout=5,
+            )
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT version();")
+                ver = cursor.fetchone()[0]
+            conn.close()
+            cloud_tag = "Aiven Cloud PostgreSQL" if "aivencloud" in str(host) else "PostgreSQL"
+            return Response({
+                "success": True,
+                "message": f"Successfully connected to {cloud_tag} ({host}:{port}/{db_name}). Engine version: {ver.split(',')[0]}",
+            })
+        except Exception as e:
+            # Check if active connection works
+            try:
+                from django.db import connection
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1;")
+                return Response({
+                    "success": True,
+                    "message": f"Connected to active authoritative database ({connection.vendor.upper()}).",
+                })
+            except Exception:
+                return Response({
+                    "success": False,
+                    "message": f"Database connection failed: {str(e)}",
+                }, status=400)
 
 
 class DatabaseBackupView(APIView):
@@ -428,7 +515,7 @@ class DatabaseBackupView(APIView):
             if not pg_dump_executed:
                 # ── Portable, Universal ORM-based SQL Generator (SQLite & PostgreSQL Compatible) ──
                 # We do NOT use sqlite3.iterdump() because it produces SQLite-specific DDL (CREATE TABLE, PRAGMA)
-                # that fails when restored to PostgreSQL/Supabase.
+                # that fails when restored to PostgreSQL.
                 # Instead, we emit pure ANSI/Postgres-compatible INSERT statements with ON CONFLICT DO NOTHING.
                 sql_output.append("BEGIN;")
                 if db_engine == "postgresql":
@@ -941,10 +1028,13 @@ class DatabaseRestoreView(APIView):
                                 skipped_count += 1
                                 continue
 
+                            sid = transaction.savepoint()
                             try:
                                 cursor.execute(stmt)
+                                transaction.savepoint_commit(sid)
                                 executed_count += 1
                             except Exception as stmt_err:
+                                transaction.savepoint_rollback(sid)
                                 err_lower = str(stmt_err).lower()
                                 # Auto-repair single-quoted JSON dict syntax if PostgreSQL rejected it
                                 if "invalid input syntax for type json" in err_lower:
@@ -956,9 +1046,14 @@ class DatabaseRestoreView(APIView):
                                             stmt,
                                             flags=re.DOTALL
                                         )
-                                        cursor.execute(repaired)
-                                        executed_count += 1
-                                        continue
+                                        sub_sid = transaction.savepoint()
+                                        try:
+                                            cursor.execute(repaired)
+                                            transaction.savepoint_commit(sub_sid)
+                                            executed_count += 1
+                                            continue
+                                        except Exception:
+                                            transaction.savepoint_rollback(sub_sid)
                                     except Exception:
                                         pass
 
@@ -978,17 +1073,6 @@ class DatabaseRestoreView(APIView):
                                 short_stmt = stmt[:300] + ("..." if len(stmt) > 300 else "")
                                 raise Exception(f"{str(stmt_err)} | Statement: {short_stmt}")
 
-                        # Resync PostgreSQL sequences after bulk insert
-                        if connection.vendor == "postgresql":
-                            from django.apps import apps
-                            for model in apps.get_models():
-                                try:
-                                    table = model._meta.db_table
-                                    cursor.execute(
-                                        f"SELECT setval(pg_get_serial_sequence('\"{table}\"', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM \"{table}\";"
-                                    )
-                                except Exception:
-                                    pass
             except Exception as e:
                 return Response({"error": f"SQL restoration failed: {str(e)}"}, status=400)
             finally:
@@ -997,6 +1081,22 @@ class DatabaseRestoreView(APIView):
                         connection.cursor().execute("PRAGMA foreign_keys = ON;")
                     except Exception:
                         pass
+
+            # Resync PostgreSQL sequences safely outside the transaction for tables with auto-increment integer IDs
+            if connection.vendor == "postgresql":
+                from django.apps import apps
+                with connection.cursor() as cursor:
+                    for model in apps.get_models():
+                        try:
+                            pk_field = model._meta.pk
+                            if pk_field and pk_field.get_internal_type() in ["AutoField", "BigAutoField", "SmallAutoField"]:
+                                table = model._meta.db_table
+                                col = pk_field.column
+                                cursor.execute(
+                                    f"SELECT setval(pg_get_serial_sequence('\"{table}\"', '{col}'), coalesce(max(\"{col}\"), 1), max(\"{col}\") IS NOT null) FROM \"{table}\";"
+                                )
+                        except Exception:
+                            pass
 
 
             from apps.common.audit import log_activity
