@@ -1,6 +1,6 @@
 """
 Development settings for Zamzam Foods.
-Uses Supabase PostgreSQL (same as production) — no SQLite.
+Uses Local PostgreSQL — fallback to local SQLite for test suites if PostgreSQL is offline.
 """
 
 import os
@@ -17,8 +17,8 @@ ALLOWED_HOSTS = [
 ALLOWED_HOSTS += ["localhost", "127.0.0.1", "0.0.0.0", ".ts.net", "shiyass-macbook-air.tail4ef336.ts.net", "testserver"]
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# If DATABASE_URL is set and valid → Supabase/PostgreSQL
-# If missing or still a placeholder  → fall back to local SQLite (dev only)
+# If DATABASE_URL is set and valid → Local PostgreSQL (postgresql://postgres:postgres@localhost:5432/zamzam_foods)
+# If missing or still a placeholder  → fall back to local SQLite (dev / testing fallback)
 DATABASE_URL_ENV = os.environ.get("DATABASE_URL", "").strip()
 
 _use_sqlite_fallback = not DATABASE_URL_ENV or any(
@@ -28,10 +28,9 @@ _use_sqlite_fallback = not DATABASE_URL_ENV or any(
 if _use_sqlite_fallback:
     import warnings
     warnings.warn(
-        "\n\n⚠️  DATABASE_URL not configured — using local SQLite (db.sqlite3).\n"
-        "    To connect to Supabase PostgreSQL, update DATABASE_URL in backend/.env\n"
-        "    with your Supabase Session Pooler URI from:\n"
-        "    https://supabase.com/dashboard/project/mfrakyarmmnvsvzlyota/settings/database\n",
+        "\n\n⚠️  DATABASE_URL not configured — using local SQLite fallback (db.sqlite3).\n"
+        "    To connect to Local PostgreSQL, update DATABASE_URL in backend/.env with:\n"
+        "    postgresql://postgres:postgres@localhost:5432/zamzam_foods\n",
         UserWarning,
         stacklevel=2,
     )

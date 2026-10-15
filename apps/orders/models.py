@@ -51,7 +51,7 @@ class Order(TimeStampedUUIDModel):
         related_name="orders",
         help_text="Driver assigned to deliver this order"
     )
-    order_date = models.DateField(default=timezone.now, db_index=True)
+    order_date = models.DateField(default=timezone.localdate, db_index=True)
     submitted_at = models.DateTimeField(
         null=True,
         blank=True,

@@ -53,8 +53,27 @@ urlpatterns = [
 from django.views.static import serve
 from django.urls import re_path
 
-# Serve media files (fallback for local files when accessed in production or development)
+from pathlib import Path
+from django.http import FileResponse, HttpResponse
+
+def serve_spa(request, path=""):
+    dist_dir = Path(settings.BASE_DIR) / "dist"
+    if not dist_dir.exists():
+        dist_dir = Path(settings.BASE_DIR).parent / "frontend" / "dist"
+    
+    if path:
+        target_file = (dist_dir / path).resolve()
+        if str(target_file).startswith(str(dist_dir.resolve())) and target_file.is_file():
+            return FileResponse(open(target_file, "rb"))
+
+    index_file = dist_dir / "index.html"
+    if index_file.exists():
+        return FileResponse(open(index_file, "rb"))
+
+    return HttpResponse("<h1>Zamzam Foods API</h1><p>Visit <a href='/api/v1/'>/api/v1/</a></p>")
+
+# Serve frontend single-page application for all non-API paths
 urlpatterns += [
-    re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+    re_path(r"^(?P<path>.*)$", serve_spa),
 ]
 
